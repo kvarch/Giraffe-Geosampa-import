@@ -2808,6 +2808,31 @@ async function fetchWMSFeatureInfo(layerName, lng, lat, opts = {}) {
 
 // Usado só para destacar o terreno (contorno vermelho) por cima do que
 // o WMS já desenhou — não redesenhamos mais as camadas analisadas.
+// Detecta se uma imagem WMS veio essencialmente em branco (GeoServer às
+// vezes devolve HTTP 200 com uma imagem em branco em vez de erro de
+// verdade, quando uma camada trava na renderização — ex: rótulos densos
+// demais numa área pequena). Amostra uma grade de pixels e verifica se a
+// imagem é quase toda uniforme e clara.
+function _isCanvasBlank(ctx, w, h) {
+  try {
+    const step = Math.max(1, Math.floor(Math.min(w, h) / 20));
+    let sum = 0, sumSq = 0, n = 0;
+    for (let y = 0; y < h; y += step) {
+      for (let x = 0; x < w; x += step) {
+        const d = ctx.getImageData(x, y, 1, 1).data;
+        const lum = (d[0] + d[1] + d[2]) / 3;
+        sum += lum; sumSq += lum * lum; n++;
+      }
+    }
+    if (n === 0) return true;
+    const mean = sum / n;
+    const variance = sumSq / n - mean * mean;
+    return variance < 4 && mean > 240;
+  } catch (_) {
+    return false; // não conseguiu inspecionar (ex: canvas tainted) — assume que está ok
+  }
+}
+
 function _drawGeomOnCanvas(ctx, geometry, bbox3857, w, h, style) {
   if (!geometry) return;
   const s = Object.assign({ stroke: '#ff3b30', fill: null, fillOpacity: 0.2, lineWidth: 2.5 }, style || {});
@@ -2863,30 +2888,51 @@ async function renderCompositeMapImage(opts) {
   const [maxX3857, maxY3857] = lonLatToWebMercator(bboxWGS.maxX, bboxWGS.maxY);
   const bbox3857 = { minX: minX3857, minY: minY3857, maxX: maxX3857, maxY: maxY3857 };
 
-  const layersParam = layers.map(encodeURIComponent).join(',');
-  const stylesParam = layers.map((_, i) => styles[i] ? encodeURIComponent(styles[i]) : '').join(',');
   // "_cb" (cache-bust): o worker cacheia por 7 dias qualquer resposta de
-  // GetMap usando a URL inteira como chave. Se o GeoServer já retornou uma
-  // imagem quebrada (HTTP 200 com pixel de erro) para essa mesma
-  // combinação de bbox/camadas, o worker ficaria servindo esse erro pra
-  // sempre. Como as imagens do relatório são geradas do zero a cada
-  // exportação (não há benefício de cache aqui, diferente do pan/zoom ao
-  // vivo no mapa), sempre buscamos uma versão nova.
-  const wmsUrl = `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetMap`
-    + `&layers=${layersParam}&styles=${stylesParam}&srs=EPSG:3857`
-    + `&width=${widthPx}&height=${heightPx}&format=image/jpeg`
-    + `&bbox=${bbox3857.minX},${bbox3857.minY},${bbox3857.maxX},${bbox3857.maxY}`
-    + `&_cb=${Date.now()}`;
-  const tileUrl = buildProxiedWMS(wmsUrl);
+  // GetMap usando a URL inteira como chave. Como as imagens do relatório
+  // são geradas do zero a cada exportação, sempre buscamos uma versão nova.
+  function buildGetMapUrl(layersArr, stylesArr) {
+    const layersParam = layersArr.map(encodeURIComponent).join(',');
+    const stylesParam = layersArr.map((_, i) => stylesArr[i] ? encodeURIComponent(stylesArr[i]) : '').join(',');
+    return `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetMap`
+      + `&layers=${layersParam}&styles=${stylesParam}&srs=EPSG:3857`
+      + `&width=${widthPx}&height=${heightPx}&format=image/jpeg`
+      + `&bbox=${bbox3857.minX},${bbox3857.minY},${bbox3857.maxX},${bbox3857.maxY}`
+      + `&_cb=${Date.now()}`;
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = widthPx; canvas.height = heightPx;
   const ctx = canvas.getContext('2d');
 
+  let bgOk = false;
   try {
-    const img = await loadImageCORS(tileUrl);
+    const img = await loadImageCORS(buildProxiedWMS(buildGetMapUrl(layers, styles)));
     ctx.drawImage(img, 0, 0, widthPx, heightPx);
+    bgOk = !_isCanvasBlank(ctx, widthPx, heightPx);
   } catch (e) {
+    console.warn('[WMS] falha na chamada combinada:', e);
+  }
+
+  if (!bgOk && layers.length > 1) {
+    // Uma camada combinada às vezes trava a renderização no servidor (comum
+    // quando uma delas tem rótulos densos, tipo lote_cidadao) — o GeoServer
+    // devolve HTTP 200 com imagem em branco em vez de erro de verdade.
+    // Tenta de novo só com a primeira camada (normalmente o mapa base).
+    try {
+      ctx.clearRect(0, 0, widthPx, heightPx);
+      const img2 = await loadImageCORS(buildProxiedWMS(buildGetMapUrl([layers[0]], [styles[0]])));
+      ctx.drawImage(img2, 0, 0, widthPx, heightPx);
+      bgOk = !_isCanvasBlank(ctx, widthPx, heightPx);
+      if (bgOk) {
+        log('warn', `Camada "${layers[1]}" veio em branco no servidor (comum com áreas muito densas de rótulos) — mostrando só o mapa base.`);
+      }
+    } catch (e) {
+      console.warn('[WMS] falha no fallback (só mapa base):', e);
+    }
+  }
+
+  if (!bgOk) {
     ctx.fillStyle = '#e8e8e8'; ctx.fillRect(0, 0, widthPx, heightPx);
     ctx.fillStyle = '#888'; ctx.font = '16px sans-serif';
     ctx.fillText('Fundo WMS indisponível no momento da geração', 20, 30);
@@ -3841,7 +3887,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V44</span>
+    <span style="color:#00ACCD">V45</span>
   </div>
 </body>
 </html>
