@@ -3787,6 +3787,190 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
   return results;
 }
 
+// ── Bloco Ambiental — Licenciamento Ambiental ─────────────────────────
+// Camadas WFS confirmadas: GEOSAMPA_termo_compromisso_ambiental, drenagem,
+// mancha_inundacao_5/25/100, area_inundavel (PDMAT3 100 anos — WFS-only,
+// sem WMS), GEOSAMPA_area_contaminada_sigac, area_contaminada_reabilitada_svma,
+// GEOSAMPA_heliponto (WFS-only, sem WMS, mas com campos ricos de parecer/EIV).
+async function analisarBlocoAmbiental(terrainGeom, wkt) {
+  const results = [];
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'tca', titulo: 'Ambiental — Termo de Compromisso Ambiental (TCA)',
+    layerName: 'geoportal:GEOSAMPA_termo_compromisso_ambiental', maxFeatures: 10, marginMeters: 150,
+    montaLinha: f => { const p = f.properties || {}; return `Processo ${p.cd_processo || '—'} — interessado: ${p.nm_interessado || '—'} — etapa: ${p.st_etapa_tca || '—'} — finalidade: ${p.tx_finalidade || '—'}`; },
+    semTexto: 'Sem Termo de Compromisso Ambiental incidente.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'drenagem', titulo: 'Ambiental — Rede de Drenagem (Córregos)',
+    layerName: 'geoportal:drenagem', maxFeatures: 10, marginMeters: 150, bufferMetros: 20,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_acidente || p.nm_descritivo || '—'} (${p.nm_tipo_curso_hidrografia || '—'}) — próximo a: ${p.nm_via_proximo || '—'}`; },
+    semTexto: 'Sem curso d\u2019água num raio de 20m do terreno.',
+  }));
+
+  // Mancha de Inundação — 5, 25 e 100 anos têm imagem WMS; PDMAT3 100 anos
+  // (area_inundavel) só existe no WFS, sem imagem.
+  for (const [id, layer, titulo] of [
+    ['inundacao_5', 'mancha_inundacao_5', '5 anos'],
+    ['inundacao_25', 'mancha_inundacao_25', '25 anos'],
+    ['inundacao_100', 'mancha_inundacao_100', '100 anos'],
+  ]) {
+    results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+      id, titulo: `Ambiental — Mancha de Inundação (${titulo})`,
+      layerName: `geoportal:${layer}`, maxFeatures: 5, marginMeters: 200,
+      montaLinha: f => { const p = f.properties || {}; return `Bacia: ${p.nm_bacia_hidrografica || '—'} — cota máxima de inundação: ${p.qt_cota_inundacao || '—'}m — profundidade máx.: ${p.qt_profundidade_maxima || '—'}m`; },
+      semTexto: `Sem mancha de inundação (${titulo}) incidente.`,
+    }));
+  }
+
+  try {
+    const gj = await fetchWFSByGeom('geoportal:area_inundavel', wkt, 5);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => { const p = f.properties || {}; return `PDMAT3 100 anos — cota máxima de inundação: ${p.qt_cota_inundacao || '—'}m (tempo de retorno: ${p.qt_tempo_retorno || '—'} anos)`; });
+      results.push({ id: 'pdmat3', titulo: 'Ambiental — Mancha de Inundação (PDMAT3 100 anos)', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+    } else {
+      results.push({ id: 'pdmat3', titulo: 'Ambiental — Mancha de Inundação (PDMAT3 100 anos)', temInterferencia: false, resumoLinhas: ['Sem mancha de inundação PDMAT3 (100 anos) incidente.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'pdmat3', titulo: 'Ambiental — Mancha de Inundação (PDMAT3 100 anos)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'area_contaminada', titulo: 'Ambiental — Área Contaminada (SIGAC)',
+    layerName: 'geoportal:GEOSAMPA_area_contaminada_sigac', maxFeatures: 10, marginMeters: 150,
+    montaLinha: f => { const p = f.properties || {}; return `Processo ${p.nr_processo || '—'} — atividade: ${p.dc_atividade || '—'} — situação: ${p.dc_tipo_situacao || '—'}`; },
+    semTexto: 'Sem área contaminada (SIGAC) incidente.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'area_contaminada_reabilitada', titulo: 'Ambiental — Área Contaminada Reabilitada / Suspeita (SVMA)',
+    layerName: 'geoportal:area_contaminada_reabilitada_svma', maxFeatures: 10, marginMeters: 150,
+    montaLinha: f => { const p = f.properties || {}; return `${p.tx_endereco_area_contaminada || '—'} — classificação CETESB: ${p.dc_classificacao_area_contaminada || '—'} — contaminante: ${p.tx_contaminante || '—'}`; },
+    semTexto: 'Sem área contaminada reabilitada/suspeita (SVMA) incidente.',
+  }));
+
+  try {
+    const gj = await fetchWFSByGeom('geoportal:GEOSAMPA_heliponto', wkt, 10);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `${p.nm_empreendimento_heliponto || '—'} — ${p.tx_endereco_heliponto || '—'} — processo: ${p.cd_processo_administrativo_heliponto || '—'} — deferimento: ${p.st_deferimento_processo_administrativo || '—'}${p.tx_link_diario_oficial ? ` — ${p.tx_link_diario_oficial}` : ''}`;
+      });
+      results.push({ id: 'heliponto', titulo: 'Ambiental — Estudo/Relatório de Impacto de Vizinhança (Heliponto)', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+    } else {
+      results.push({ id: 'heliponto', titulo: 'Ambiental — Estudo/Relatório de Impacto de Vizinhança (Heliponto)', temInterferencia: false, resumoLinhas: ['Sem heliponto incidente.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'heliponto', titulo: 'Ambiental — Estudo/Relatório de Impacto de Vizinhança (Heliponto)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  return results;
+}
+
+// ── Bloco Infra — Infraestrutura Urbana, Meio Físico e Equipamentos ───
+// Agrupado num único bloco (a pedido do usuário: blocos pequenos podem ser
+// juntados). Camadas WFS confirmadas: linha_alta_tensao, torre_alta_tensao,
+// geoconvias_lei_melhoramento_vigente, geoconvias_faixa_nao_edificavel
+// (WFS-only, sem WMS), carta_geotecnica, solo_mole, equipamento_feira_livre,
+// cobertura_vegetal.
+async function analisarBlocoInfraestrutura(terrainGeom, wkt) {
+  const results = [];
+
+  // Energia — linha + torre de alta tensão (a camada "Energia" citada no
+  // roteiro só existe como WMS agregador; usamos as duas camadas WFS reais)
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'linha_alta_tensao', titulo: 'Infraestrutura — Energia (Linha de Alta Tensão)',
+    layerName: 'geoportal:linha_alta_tensao', maxFeatures: 10, marginMeters: 150, bufferMetros: 30,
+    montaLinha: () => 'Linha de alta tensão identificada num raio de 30m do terreno.',
+    semTexto: 'Sem linha de alta tensão num raio de 30m do terreno.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'torre_alta_tensao', titulo: 'Infraestrutura — Energia (Torre de Alta Tensão)',
+    layerName: 'geoportal:torre_alta_tensao', maxFeatures: 10, marginMeters: 150, bufferMetros: 30,
+    montaLinha: () => 'Torre de alta tensão identificada num raio de 30m do terreno.',
+    semTexto: 'Sem torre de alta tensão num raio de 30m do terreno.',
+  }));
+
+  // Lei de Melhoramento Viário — nota automática se ano < 1988 (possível
+  // desconsideração conforme COE, a pedido do usuário)
+  try {
+    const gj = await fetchWFSByGeom('geoportal:geoconvias_lei_melhoramento_vigente', wkt, 10);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        const ano = parseInt(p.an_lei_melhoramento_vigente);
+        let linha = `Lei ${p.cd_numero_lei_vigente || '—'}/${p.an_lei_melhoramento_vigente || '—'} — ${p.tx_descricao_tipo_melhoramento || '—'}`;
+        if (!isNaN(ano) && ano < 1988) linha += ' — ⚠ Ano < 1988: possível desconsideração conforme COE (confirmar).';
+        return linha;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({ terrainGeom, layers: ['MapaBase_Topografico', 'geoconvias_lei_melhoramento_vigente'], styles: [null, null], marginMeters: 150, widthPx: 1000, heightPx: 750 });
+      } catch (e) {
+        console.error('[PDF][Melhoramento Viário] falha ao gerar imagem:', e);
+        log('warn', `Melhoramento Viário: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'melhoramento_viario', titulo: 'Infraestrutura — Lei de Melhoramento Viário', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'melhoramento_viario', titulo: 'Infraestrutura — Lei de Melhoramento Viário', temInterferencia: false, resumoLinhas: ['Sem lei de melhoramento viário incidente.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'melhoramento_viario', titulo: 'Infraestrutura — Lei de Melhoramento Viário', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // Faixa Não Edificável — WFS-only, sem imagem
+  try {
+    const gj = await fetchWFSByGeom('geoportal:geoconvias_faixa_nao_edificavel', wkt, 10);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => { const p = f.properties || {}; return `Largura da faixa: ${p.qt_metro_largura_faixa || '—'}m — Lei ${p.cd_numero_lei_vigente || '—'}/${p.an_lei_melhoramento_vigente || '—'}`; });
+      results.push({ id: 'faixa_nao_edificavel', titulo: 'Infraestrutura — Faixa Não Edificável', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+    } else {
+      results.push({ id: 'faixa_nao_edificavel', titulo: 'Infraestrutura — Faixa Não Edificável', temInterferencia: false, resumoLinhas: ['Sem faixa não edificável incidente.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'faixa_nao_edificavel', titulo: 'Infraestrutura — Faixa Não Edificável', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // Meio Físico
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'carta_geotecnica', titulo: 'Meio Físico — Carta Geotécnica',
+    layerName: 'geoportal:carta_geotecnica', maxFeatures: 5, marginMeters: 200,
+    montaLinha: f => { const p = f.properties || {}; return `Unidade: ${p.tx_unidade_geotecnica || '—'} — aptidão à urbanização: ${p.tx_aptidao_geotecnica_urbanizacao || '—'}`; },
+    semTexto: 'Unidade geotécnica não identificada.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'solo_mole', titulo: 'Meio Físico — Solo Mole',
+    layerName: 'geoportal:solo_mole', maxFeatures: 5, marginMeters: 200,
+    montaLinha: f => { const p = f.properties || {}; return `Feição: ${p.nm_tipo_feicao || '—'}`; },
+    semTexto: 'Sem ocorrência de solo mole identificada.',
+  }));
+
+  // Equipamentos
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'feira_livre', titulo: 'Equipamentos — Feira Livre',
+    layerName: 'geoportal:equipamento_feira_livre', maxFeatures: 5, marginMeters: 200, bufferMetros: 150,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_equipamento || '—'} — ${p.tx_dia_funcionamento || '—'} — ${p.tx_horario_funcionamento || '—'}`; },
+    semTexto: 'Sem feira livre num raio de 150m do terreno.',
+  }));
+
+  // Verde / Recursos Naturais
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'cobertura_vegetal', titulo: 'Verde — Mapeamento da Cobertura Vegetal',
+    layerName: 'geoportal:cobertura_vegetal', maxFeatures: 10, marginMeters: 150,
+    montaLinha: f => { const p = f.properties || {}; return `${p.tx_descricao_categoria_subcategoria || '—'} — área: ${p.qt_area_vegetacao ? Math.round(p.qt_area_vegetacao).toLocaleString('pt-BR') : '—'}m² — altura média: ${p.qt_altura_media_vegetacao || '—'}m`; },
+    semTexto: 'Sem cobertura vegetal significativa mapeada incidente.',
+  }));
+
+  return results;
+}
+
 // ── Bloco 3 — Patrimônio Histórico ────────────────────────────────────
 // ZEPEC foi movido para o Bloco 2 (Legislação Urbana), seguindo a nova
 // estrutura do roteiro do usuário — não é mais tratado aqui.
@@ -4346,6 +4530,55 @@ window.exportReportPDF = async function() {
       log('warn', `Bloco de patrimônio histórico do PDF falhou parcialmente: ${e.message}`);
     }
 
+    // ── PARTE 6 — Licenciamento Ambiental (página própria) ─────────────
+    try {
+      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+
+      if (terrainWKTForPDF) {
+        log('info', 'Relatório PDF: analisando Licenciamento Ambiental...');
+        const blocoAmbiental = await analisarBlocoAmbiental(terrainGeomForPDF, terrainWKTForPDF);
+
+        const resumoCardAmbiental = {
+          titulo: 'Resumo Complementar — Licenciamento Ambiental',
+          resumoLinhas: blocoAmbiental.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+          imagem: null,
+        };
+        const cardsParaExibirAmbiental = [resumoCardAmbiental, ...blocoAmbiental.filter(it => it.temInterferencia)];
+
+        pdf.addPage('a4', 'portrait');
+        _addBloco1CardsToPDF(pdf, cardsParaExibirAmbiental, now);
+      }
+    } catch (e) {
+      console.error('[PDF][BlocoAmbiental]', e);
+      log('warn', `Bloco de licenciamento ambiental do PDF falhou parcialmente: ${e.message}`);
+    }
+
+    // ── PARTE 7 — Infraestrutura Urbana, Meio Físico, Equipamentos e
+    // Verde (página própria) ───────────────────────────────────────────
+    try {
+      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+
+      if (terrainWKTForPDF) {
+        log('info', 'Relatório PDF: analisando Infraestrutura, Meio Físico e Equipamentos...');
+        const blocoInfra = await analisarBlocoInfraestrutura(terrainGeomForPDF, terrainWKTForPDF);
+
+        const resumoCardInfra = {
+          titulo: 'Resumo Complementar — Infraestrutura, Meio Físico, Equipamentos e Verde',
+          resumoLinhas: blocoInfra.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+          imagem: null,
+        };
+        const cardsParaExibirInfra = [resumoCardInfra, ...blocoInfra.filter(it => it.temInterferencia)];
+
+        pdf.addPage('a4', 'portrait');
+        _addBloco1CardsToPDF(pdf, cardsParaExibirInfra, now);
+      }
+    } catch (e) {
+      console.error('[PDF][BlocoInfra]', e);
+      log('warn', `Bloco de infraestrutura/meio físico do PDF falhou parcialmente: ${e.message}`);
+    }
+
     pdf.save(filename);
     log('ok', `PDF exportado: ${filename}`);
 
@@ -4365,7 +4598,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V53</span>
+    <span style="color:#00ACCD">V54</span>
   </div>
 </body>
 </html>
