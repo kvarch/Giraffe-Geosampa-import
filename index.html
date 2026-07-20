@@ -3007,6 +3007,46 @@ async function renderCompositeMapImage(opts) {
 // (Logradouro Confrontante foi movido para o Bloco Viário próprio —
 // seguindo a nova estrutura do roteiro: "2. SISTEMA VIÁRIO")
 // Retorna array de itens: { id, titulo, temInterferencia, resumoLinhas:[...], imagem:{dataUrl,width,height}|null }
+// Utilitário genérico: busca uma única camada WFS, e se encontrar algo,
+// gera imagem (mapa base + a camada) e monta as linhas de texto; senão,
+// devolve o item com "sem incidência". Usado para reduzir repetição nos
+// itens de camada única dos Blocos 2+ (cada um segue o mesmo padrão).
+async function _itemCamadaUnica(terrainGeom, wkt, opts) {
+  const {
+    id, titulo, layerName, maxFeatures = 10, marginMeters = 150,
+    montaLinha, semTexto, styleCamada = null, bufferMetros = null,
+    widthPx = 1000, heightPx = 750,
+  } = opts;
+  try {
+    let wktBusca = wkt;
+    if (bufferMetros && terrainGeom) {
+      const buffered = turfBuffer(terrainGeom, bufferMetros);
+      wktBusca = geojsonToWKT(buffered) || wkt;
+    }
+    const gj = await fetchWFSByGeom(layerName, wktBusca, maxFeatures);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(montaLinha);
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', layerName.replace('geoportal:', '')],
+          styles: [null, styleCamada],
+          marginMeters, widthPx, heightPx,
+        });
+      } catch (e) {
+        console.error(`[PDF][${titulo}] falha ao gerar imagem:`, e);
+        log('warn', `${titulo}: imagem WMS falhou — ${e.message}`);
+      }
+      return { id, titulo, temInterferencia: true, resumoLinhas: linhas, imagem: img };
+    }
+    return { id, titulo, temInterferencia: false, resumoLinhas: [semTexto], imagem: null };
+  } catch (e) {
+    return { id, titulo, temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null };
+  }
+}
+
 async function analisarBloco1Cadastral(terrainGeom, wkt) {
   const results = [];
 
@@ -3215,29 +3255,30 @@ async function analisarBlocoViario(terrainGeom, wkt) {
 // das Zonas, Qualificação Ambiental) — o usuário pediu duplicação
 // intencional aqui, com print. Camadas WFS confirmadas nesta versão:
 // operacao_urbana, subsetor_operacao_urbana, zoneamento_2016_map1,
-// pde_transporte_linha, aiu_perimetro_pinheiros, aiu_perimetro_jurubatuba,
+// pde_transporte_linha/estacao_terminal, pde_viario_estrutural,
+// pde_intervencao_pontual_melhoramento_viario, pde_drenagem_acao_prioritaria_linear/pontual,
+// aiu_perimetro_pinheiros/jurubatuba, perimetro_aiu (Setor Central),
+// aiu_vl_perimetro_adesao (Vila Leopoldina), requalifica_centro_perimetro_geral,
 // enquadramento_vila, deliberacao_ctlu, pde_macroarea_lei_18209,
-// quadra_fiscal, edificacao. "Zoneamento Ativado" usa GetFeatureInfo (WMS)
-// porque não existe no WFS (testado e confirmado: servidor recusa o
-// typeName). Qualificação Ambiental reaproveita a mesma grade estática
-// (Mapa 3 / Quadro 3A, `getQualificacaoAmbiental`) já usada na Parte 1 —
-// não há camada WMS dedicada para essa grade, então a imagem é só de
-// contexto (mapa base + terreno destacado).
+// pde2014_v_mcrz_01_map (Macrozona), pde2014_v_maem_02a_map (Setores AEM),
+// planta_dup_dis_pd (DUP), restricao_geotecnica, quadra_fiscal, edificacao.
+// "Zoneamento Ativado" usa GetFeatureInfo (WMS) porque não existe no WFS
+// (testado e confirmado: servidor recusa o typeName). Qualificação
+// Ambiental reaproveita a mesma grade estática (Mapa 3 / Quadro 3A,
+// `getQualificacaoAmbiental`) já usada na Parte 1 — não há camada WMS
+// dedicada para essa grade, então a imagem é só de contexto (mapa base +
+// terreno destacado).
 //
 // Limitações honestas — não implementadas nesta versão:
-//  · "Perímetros AIU" além de Pinheiros/Jurubatuba (ex: Setor Central,
-//    Vila Leopoldina) — não encontrei camada WFS própria para eles.
-//  · "Macrozona" — só achei a camada de Macroárea; Macrozona (PDE Lei
-//    16.050) não foi localizada como camada própria.
 //  · "Isenção de Recuo Frontal" — exigiria cruzar a testada exata do lote
 //    com as projeções de edificação e medir % de ocupação no alinhamento;
 //    não tenho uma forma confiável de extrair a testada como segmento
 //    isolado a partir dos dados disponíveis. Fica de fora até confirmar
 //    uma abordagem geométrica sólida.
-//  · O buffer da "Vila" e o buffer das linhas de PDE Transporte são
-//    RAIOS DE VISUALIZAÇÃO definidos pelo app para dar contexto no mapa —
-//    não são parâmetros legais oficiais. Isso é dito explicitamente no
-//    texto do relatório.
+//  · O buffer da "Vila" e o buffer das linhas de PDE Transporte/Drenagem
+//    são RAIOS DE VISUALIZAÇÃO definidos pelo app para dar contexto no
+//    mapa — não são parâmetros legais oficiais. Isso é dito explicitamente
+//    no texto do relatório.
 async function analisarBloco2Legislacao(terrainGeom, wkt) {
   const results = [];
   let zonaCodigoDetectado = null; // reaproveitado depois no item "Verticalização da Quadra"
@@ -3268,13 +3309,50 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
         console.error('[PDF][PDE Transporte] falha ao gerar imagem:', e);
         log('warn', `PDE Transporte: imagem WMS falhou — ${e.message}`);
       }
-      results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+      results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte, linhas)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
-      results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte)', temInterferencia: false, resumoLinhas: ['Nenhuma linha de ação prioritária de transporte num raio de 300m do terreno.'], imagem: null });
+      results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte, linhas)', temInterferencia: false, resumoLinhas: ['Nenhuma linha de ação prioritária de transporte num raio de 300m do terreno.'], imagem: null });
     }
   } catch (e) {
-    results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+    results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte, linhas)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
+
+  // 2c) Demais camadas dos Mapas PDE (Mobilidade e Drenagem) — cada uma
+  // com sua própria imagem, seguindo a nova estrutura do roteiro.
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'pde_transporte_estacao', titulo: 'Legislação — PDE Transporte (Estações/Terminais)',
+    layerName: 'geoportal:pde_transporte_estacao_terminal', maxFeatures: 20, bufferMetros: 300, marginMeters: 350,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_estacao_terminal || '—'} — linha: ${p.nm_linha || '—'} (${p.tx_tipo_modal || '—'}) — situação: ${p.tx_tipo_situacao_projeto || '—'}`; },
+    semTexto: 'Nenhuma estação/terminal de ação prioritária num raio de 300m do terreno.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'pde_viario_estrutural', titulo: 'Legislação — PDE Intervenções em Viário Estrutural (Mapa 8)',
+    layerName: 'geoportal:pde_viario_estrutural', maxFeatures: 20, bufferMetros: 100, marginMeters: 200,
+    montaLinha: f => { const p = f.properties || {}; return `${p.tx_tipo_categoria_intervencao || '—'}`; },
+    semTexto: 'Sem intervenção em viário estrutural (Mapa 8) próxima ao terreno.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'pde_melhoramento_pontual', titulo: 'Legislação — PDE Intervenções Pontuais de Melhoramento Viário (Mapa 8)',
+    layerName: 'geoportal:pde_intervencao_pontual_melhoramento_viario', maxFeatures: 10,
+    montaLinha: f => { const p = f.properties || {}; return `${p.tx_tipo_categoria_intervencao || '—'}`; },
+    semTexto: 'Sem intervenção pontual de melhoramento viário (Mapa 8) incidente.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'pde_drenagem_linear', titulo: 'Legislação — PDE Drenagem — Ações Prioritárias Lineares (Mapa 12)',
+    layerName: 'geoportal:pde_drenagem_acao_prioritaria_linear', maxFeatures: 20, bufferMetros: 150, marginMeters: 250,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_obra || '—'} — ${p.tx_tipo_intervencao || '—'} — situação: ${p.tx_tipo_situacao_projeto || '—'}`; },
+    semTexto: 'Sem ação prioritária de drenagem linear (Mapa 12) num raio de 150m.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'pde_drenagem_pontual', titulo: 'Legislação — PDE Drenagem — Ações Prioritárias Pontuais (Mapa 12)',
+    layerName: 'geoportal:pde_drenagem_acao_prioritaria_pontual', maxFeatures: 10, bufferMetros: 150, marginMeters: 250,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_obra || '—'} — ${p.tx_tipo_intervencao || '—'} — situação: ${p.tx_tipo_situacao_projeto || '—'}`; },
+    semTexto: 'Sem ação prioritária de drenagem pontual (Mapa 12) num raio de 150m.',
+  }));
 
   // 2) Perímetro das Zonas — réplica com imagem (já existe em texto na Parte 1)
   try {
@@ -3376,15 +3454,12 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
     results.push({ id: 'zepec', titulo: 'Legislação — ZEPEC', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
-  // 4) Macrozona e Macroárea (Macrozona não localizada como camada própria)
+  // 4) Macroárea (PDE Lei 18.209) — mantido exatamente como já funcionava
   try {
     const gj = await fetchWFSByGeom('geoportal:pde_macroarea_lei_18209', wkt, 5);
     const feats = gj?.features || [];
     if (feats.length > 0) {
-      const linhas = [
-        ...feats.map(f => { const p = f.properties || {}; return `Macroárea: ${p.nm_macroarea || '—'} (${p.sg_macroarea || '—'})`; }),
-        'Macrozona: não encontrei camada própria no GeoSampa para esse dado (PDE Lei 16.050) — confirmar manualmente se necessário.',
-      ];
+      const linhas = feats.map(f => { const p = f.properties || {}; return `Macroárea: ${p.nm_macroarea || '—'} (${p.sg_macroarea || '—'})`; });
       let img = null;
       try {
         img = await renderCompositeMapImage({
@@ -3397,13 +3472,30 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
         console.error('[PDF][Macroárea] falha ao gerar imagem:', e);
         log('warn', `Macroárea: imagem WMS falhou — ${e.message}`);
       }
-      results.push({ id: 'macroarea', titulo: 'Legislação — Macrozona e Macroárea (PDE)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+      results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
-      results.push({ id: 'macroarea', titulo: 'Legislação — Macrozona e Macroárea (PDE)', temInterferencia: false, resumoLinhas: ['Macroárea não identificada.'], imagem: null });
+      results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: false, resumoLinhas: ['Macroárea não identificada.'], imagem: null });
     }
   } catch (e) {
-    results.push({ id: 'macroarea', titulo: 'Legislação — Macrozona e Macroárea (PDE)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+    results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
+
+  // 4b) Macrozona (1) e Setores da Macroárea de Estruturação Metropolitana
+  // (2A) — camadas confirmadas (nomes reais bem diferentes do esperado:
+  // "pde2014_v_mcrz_01_map" e "pde2014_v_maem_02a_map").
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'macrozona', titulo: 'Legislação — Macrozona (PDE)',
+    layerName: 'geoportal:pde2014_v_mcrz_01_map', maxFeatures: 5, marginMeters: 400,
+    montaLinha: f => { const p = f.properties || {}; return `Macrozona: ${p.nm_perimetro_divisao_pde || p.tx_macro_divisao_pde || '—'}`; },
+    semTexto: 'Macrozona não identificada.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'setores_aem', titulo: 'Legislação — Setores da Macroárea de Estruturação Metropolitana (2A)',
+    layerName: 'geoportal:pde2014_v_maem_02a_map', maxFeatures: 5, marginMeters: 400,
+    montaLinha: f => { const p = f.properties || {}; return `Setor AEM: ${p.nm_perimetro_divisao_pde || '—'}`; },
+    semTexto: 'Terreno fora dos Setores da Macroárea de Estruturação Metropolitana.',
+  }));
 
   // 5) Qualificação Ambiental — réplica com imagem (já em texto na Parte 1)
   try {
@@ -3516,6 +3608,30 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
   } catch (e) {
     results.push({ id: 'aiu', titulo: 'Legislação — Perímetro AIU', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
+
+  // 7b) AIU Setor Central, Vila Leopoldina e Requalifica Centro — camadas
+  // confirmadas via curl (nomes reais: "perimetro_aiu" com nm_lei = "AIU
+  // Setor Central", "aiu_vl_perimetro_adesao", "requalifica_centro_perimetro_geral").
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'aiu_setor_central', titulo: 'Legislação — AIU Setor Central (Lei 17.844/22)',
+    layerName: 'geoportal:perimetro_aiu', maxFeatures: 5, marginMeters: 200,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_perimetro || '—'} (${p.tx_tipo_perimetro || '—'}) — Lei ${p.cd_numero_lei || '—'} — ${p.nm_lei || '—'}`; },
+    semTexto: 'Terreno fora do perímetro AIU Setor Central.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'aiu_vila_leopoldina', titulo: 'Legislação — AIU Vila Leopoldina (Lei 17.968/23)',
+    layerName: 'geoportal:aiu_vl_perimetro_adesao', maxFeatures: 5, marginMeters: 200,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_aiu || '—'} (${p.tx_tipo_camada || '—'}) — Lei ${p.cd_numero_lei || '—'} — ${p.nm_lei || '—'}`; },
+    semTexto: 'Terreno fora do perímetro AIU Vila Leopoldina.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'requalifica_centro', titulo: 'Legislação — Requalifica Centro (Lei 17.577/21)',
+    layerName: 'geoportal:requalifica_centro_perimetro_geral', maxFeatures: 5, marginMeters: 250,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_perimetro || '—'} — ${p.dc_lei || '—'}${p.tx_link_site ? ` — ${p.tx_link_site}` : ''}`; },
+    semTexto: 'Terreno fora do perímetro Requalifica Centro.',
+  }));
 
   // 8) Enquadramento como Vila — agora com buffer de visualização ao redor da vila
   try {
@@ -4249,7 +4365,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V52</span>
+    <span style="color:#00ACCD">V53</span>
   </div>
 </body>
 </html>
