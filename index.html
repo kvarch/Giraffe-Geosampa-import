@@ -1,6 +1,23 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
+  <script>
+    // Auto cache-bust: o Giraffe (ou algum cache intermediário) às vezes
+    // fica preso numa versão antiga deste app mesmo depois do arquivo já
+    // ter sido atualizado no GitHub. Como a URL cadastrada no workspace do
+    // Giraffe nem sempre pode ser editada por quem está usando o app, este
+    // redirecionamento acontece sozinho, assim que a página carrega:
+    // acrescenta um parâmetro único (baseado no horário atual) na própria
+    // URL, o que faz qualquer camada de cache tratar como um pedido nunca
+    // visto antes e buscar o arquivo de novo, sempre atualizado — sem
+    // depender de ninguém mexer na configuração do workspace.
+    (function () {
+      if (!location.search.includes('_cb=')) {
+        var sep = location.search ? '&' : '?';
+        location.replace(location.pathname + location.search + sep + '_cb=' + Date.now() + location.hash);
+      }
+    })();
+  </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KV — GeoSampa Import</title>
@@ -592,7 +609,7 @@
       <div id="reportBtnWrap" style="display:none;flex-direction:column;gap:8px">
         <button class="btn btn-ghost" onclick="generateReport()">🔄 Regenerar</button>
         <button class="btn btn-primary" id="btnExportPDF" onclick="exportReportPDF()">
-          ⬇ Exportar PDF — A3 Horizontal
+          ⬇ Exportar PDF
         </button>
       </div>
     </div>
@@ -4060,7 +4077,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V47</span>
+    <span style="color:#00ACCD">V48</span>
   </div>
 </body>
 </html>
