@@ -2827,7 +2827,7 @@ async function renderCompositeMapImage(opts) {
     // renderiza com rótulos em escalas bem próximas — ~1:5000):
     // ajusta a margem para que a largura do bbox não ultrapasse o
     // permitido nessa resolução de imagem.
-    const maxWidthMeters = maxScaleDenominator * 0.00028 * widthPx * 0.9; // 10% de folga
+    const maxWidthMeters = maxScaleDenominator * 0.00028 * widthPx * 0.7; // 30% de folga
     const terrainWidthMeters = (terrainBboxRaw.maxX - terrainBboxRaw.minX) * 111320 * Math.cos(23.5 * Math.PI / 180);
     const allowedMargin = Math.max(10, (maxWidthMeters - terrainWidthMeters) / 2);
     margin = Math.min(margin, allowedMargin);
@@ -2865,45 +2865,6 @@ async function renderCompositeMapImage(opts) {
   return { dataUrl: canvas.toDataURL('image/jpeg', 0.9), width: widthPx, height: heightPx };
 }
 
-// Gera uma imagem de tabela (para o item "Lote", cujo roteiro pede uma
-// captura da tabela de atributos de todos os elementos incidentes).
-// Retorna { dataUrl, width, height }.
-function renderTableImageCanvas(title, headers, rows) {
-  const colWidths = headers.map((h, i) => Math.max(
-    130, h.length * 8 + 24,
-    ...(rows.length ? rows.map(r => String(r[i] ?? '').length * 6.5 + 24) : [0])
-  ));
-  const totalW = colWidths.reduce((a, b) => a + b, 0);
-  const rowH = 26, headerH = 32, titleH = 34;
-  const totalH = titleH + headerH + Math.max(rows.length, 1) * rowH + 12;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = totalW + 20; canvas.height = totalH;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  ctx.fillStyle = '#111111'; ctx.font = 'bold 16px Arial, sans-serif';
-  ctx.fillText(title, 10, 24);
-
-  let x = 10, y = titleH;
-  ctx.fillStyle = '#0f1419'; ctx.fillRect(x, y, totalW, headerH);
-  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 12px Arial, sans-serif';
-  let cx = x;
-  headers.forEach((h, i) => { ctx.fillText(h, cx + 8, y + headerH / 2 + 4); cx += colWidths[i]; });
-  y += headerH;
-
-  rows.forEach((r, ri) => {
-    ctx.fillStyle = ri % 2 === 0 ? '#f7f9fa' : '#eef1f2';
-    ctx.fillRect(x, y, totalW, rowH);
-    ctx.fillStyle = '#222222'; ctx.font = '11px Arial, sans-serif';
-    let cx2 = x;
-    r.forEach((val, i) => { ctx.fillText(String(val ?? '—'), cx2 + 8, y + rowH / 2 + 4); cx2 += colWidths[i]; });
-    y += rowH;
-  });
-
-  return { dataUrl: canvas.toDataURL('image/jpeg', 0.92), width: canvas.width, height: canvas.height };
-}
-
 // ── Bloco 1 — Cadastro e Base Territorial ────────────────────────────
 // Camadas WFS (dados/atributos) + WMS (imagens nativas) confirmadas:
 //  quadra_fiscal / lote_cidadao          → estilo polygon.Lote.CamadaLabel
@@ -2934,7 +2895,7 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
           layers: ['MapaBase_Topografico', 'lote_cidadao'],
           styles: [null, 'polygon.Lote.CamadaLabel'],
           maxScaleDenominator: 5001,
-          marginMeters: 60, widthPx: 1000, heightPx: 750,
+          marginMeters: 25, widthPx: 1400, heightPx: 1050,
         });
       } catch (_) {}
       results.push({ id: 'setor_quadra', titulo: 'Cadastro — Setor e Quadra Fiscal', temInterferencia: true, resumoLinhas: linhas, imagem: img });
@@ -2956,8 +2917,7 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
         const endereco = [p.nm_logradouro_completo, p.cd_numero_porta].filter(Boolean).join(', ');
         return [p.cd_digito_sql || '—', endereco || '—', p.qt_area_terreno ? Number(p.qt_area_terreno).toLocaleString('pt-BR') : '—'];
       });
-      const img = renderTableImageCanvas('Lotes incidentes no terreno', headers, rows);
-      results.push({ id: 'lote', titulo: 'Cadastro — Lotes (SQL)', temInterferencia: true, resumoLinhas: [`${feats.length} lote(s) identificado(s) tocando o terreno.`], imagem: img });
+      results.push({ id: 'lote', titulo: 'Cadastro — Lotes (SQL)', temInterferencia: true, resumoLinhas: [`${feats.length} lote(s) identificado(s) tocando o terreno.`], imagem: null, tabela: { headers, rows } });
     } else {
       results.push({ id: 'lote', titulo: 'Cadastro — Lotes (SQL)', temInterferencia: false, resumoLinhas: ['Nenhum lote cadastral identificado.'], imagem: null });
     }
@@ -3068,67 +3028,151 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
   return results;
 }
 
-// ── Parte 1 do PDF: captura fiel do relatório visual ─────────────────
-// Clona o próprio #reportContent (mesmo HTML/CSS já exibido no painel
-// do app — nada é reconstruído), rasteriza com html2canvas numa largura
-// de impressão legível e pagina o resultado em folhas A4 retrato.
-async function _renderVisualReportIntoPDF(pdf, contentEl, generatedAt) {
-  const pageW = 210, pageH = 297, marginX = 10, marginTop = 12, marginBottom = 12;
-  const contentWmm = pageW - marginX * 2;
+// ── Parte 1 do PDF: mesmas informações do relatório visual, em texto ──
+// Lê o próprio #reportContent (mesmo HTML já exibido no painel do app)
+// e desenha o conteúdo como texto/tabelas nativas do jsPDF — nada é
+// recalculado aqui, só lido e formatado. Fundo claro, sem screenshot.
+function _drawWrappedText(pdf, text, x, y, maxW, lineH) {
+  const wrapped = pdf.splitTextToSize(text, maxW);
+  pdf.text(wrapped, x, y);
+  return wrapped.length * lineH;
+}
+
+function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
+  const pageW = 210, pageH = 297, marginX = 12, marginTop = 14, marginBottom = 14;
+  const contentW = pageW - marginX * 2;
+  let cursorY = marginTop;
+
+  function drawHeader() {
+    pdf.setFontSize(8); pdf.setTextColor(140, 140, 140);
+    pdf.text('KV Arquitetos · Relatório Urbanístico — Resumo', marginX, 8);
+    pdf.text(generatedAt, pageW - marginX, 8, { align: 'right' });
+    pdf.setDrawColor(0, 172, 205); pdf.setLineWidth(0.4);
+    pdf.line(marginX, 10, pageW - marginX, 10);
+  }
+  function newPage() {
+    pdf.addPage('a4', 'portrait');
+    cursorY = marginTop;
+    drawHeader();
+  }
+  function ensureSpace(h) {
+    if (cursorY + h > pageH - marginBottom) newPage();
+  }
+  function drawAlertBox(text) {
+    pdf.setFontSize(8.5);
+    const wrapped = pdf.splitTextToSize(text, contentW - 6);
+    const h = wrapped.length * 4.4 + 4;
+    ensureSpace(h + 4);
+    pdf.setFillColor(253, 240, 210);
+    pdf.rect(marginX, cursorY, contentW, h, 'F');
+    pdf.setTextColor(150, 90, 10);
+    pdf.text(wrapped, marginX + 3, cursorY + 4.2);
+    cursorY += h + 5;
+  }
+  function drawTable(rows) {
+    const colCount = Math.max(...rows.map(r => r.length), 1);
+    const colW = contentW / colCount;
+    const rowH = 5.6;
+    rows.forEach((r, ri) => {
+      ensureSpace(rowH);
+      pdf.setFillColor(ri % 2 === 0 ? 246 : 255, ri % 2 === 0 ? 248 : 255, ri % 2 === 0 ? 249 : 255);
+      pdf.rect(marginX, cursorY, contentW, rowH, 'F');
+      pdf.setFontSize(8.6); pdf.setTextColor(40, 40, 40);
+      if (r.length < colCount) {
+        // linha corrida (ex: cabeçalho de grupo com colspan na versão visual)
+        pdf.setFont(undefined, 'bold');
+        pdf.text(r.join(' — '), marginX + 2, cursorY + rowH / 2 + 1.4);
+        pdf.setFont(undefined, 'normal');
+      } else {
+        r.forEach((cell, ci) => {
+          const wrapped = pdf.splitTextToSize(cell, colW - 3);
+          pdf.text(wrapped[0] || '', marginX + ci * colW + 2, cursorY + rowH / 2 + 1.4);
+        });
+      }
+      cursorY += rowH;
+    });
+    cursorY += 3;
+  }
+
+  drawHeader();
 
   if (!contentEl || contentEl.style.display === 'none' || !contentEl.innerHTML.trim()) {
     pdf.setFontSize(11); pdf.setTextColor(180, 40, 40);
-    pdf.text('Relatório visual vazio — gere o relatório antes de exportar.', marginX, 20);
+    pdf.text('Relatório visual vazio — gere o relatório antes de exportar.', marginX, cursorY + 6);
     return;
   }
 
-  const printWidthPx = 700;
-  const clone = contentEl.cloneNode(true);
-  clone.style.display = 'flex';
-  clone.style.width = printWidthPx + 'px';
-  const wrapper = document.createElement('div');
-  wrapper.style.position = 'fixed';
-  wrapper.style.left = '-9999px';
-  wrapper.style.top = '0';
-  wrapper.style.width = printWidthPx + 'px';
-  wrapper.style.background = '#0a0a0a';
-  wrapper.appendChild(clone);
-  document.body.appendChild(wrapper);
+  const blocks = Array.from(contentEl.children);
 
-  await new Promise(r => setTimeout(r, 100));
+  for (const block of blocks) {
+    const cls = block.classList;
 
-  let canvas;
-  try {
-    canvas = await html2canvas(clone, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#0a0a0a', logging: false });
-  } finally {
-    wrapper.remove();
-  }
+    if (cls.contains('report-header')) {
+      const pill = block.querySelector('.report-terrain-pill');
+      const lei = block.querySelector('.report-lei');
+      const tags = block.querySelectorAll('.report-eixo-tag, .report-ou-tag');
+      ensureSpace(16);
+      pdf.setFontSize(13); pdf.setFont(undefined, 'bold'); pdf.setTextColor(20, 20, 20);
+      pdf.text((pill ? pill.textContent.trim() : 'Terreno'), marginX, cursorY + 5);
+      pdf.setFont(undefined, 'normal');
+      cursorY += 8;
+      if (lei) {
+        pdf.setFontSize(8.5); pdf.setTextColor(100, 100, 100);
+        cursorY += _drawWrappedText(pdf, lei.textContent.trim(), marginX, cursorY, contentW, 4);
+      }
+      tags.forEach(t => {
+        ensureSpace(5);
+        pdf.setFontSize(8.5); pdf.setTextColor(0, 130, 160);
+        pdf.text(t.textContent.trim(), marginX, cursorY + 3);
+        cursorY += 5;
+      });
+      cursorY += 3;
+      continue;
+    }
 
-  const mmPerPx = contentWmm / canvas.width;
-  const availableHmm = pageH - marginTop - marginBottom - 6;
-  const sliceHpx = Math.max(50, Math.floor(availableHmm / mmPerPx));
+    if (cls.contains('report-alert')) {
+      drawAlertBox(block.textContent.trim());
+      continue;
+    }
 
-  let offsetY = 0;
-  let firstPage = true;
-  while (offsetY < canvas.height) {
-    if (!firstPage) pdf.addPage('a4', 'portrait');
-    firstPage = false;
+    if (cls.contains('report-section')) {
+      const title = block.querySelector('.report-section-title');
+      if (title) {
+        const titleText = title.textContent.replace(/\s+/g, ' ').trim();
+        ensureSpace(9);
+        pdf.setFontSize(10.5); pdf.setFont(undefined, 'bold'); pdf.setTextColor(0, 90, 110);
+        cursorY += _drawWrappedText(pdf, titleText, marginX, cursorY + 4, contentW, 4.6) + 2;
+        pdf.setFont(undefined, 'normal');
+      }
 
-    pdf.setFontSize(8); pdf.setTextColor(140, 140, 140);
-    pdf.text('KV Arquitetos · Relatório Urbanístico — Resumo', marginX, 7);
-    pdf.text(generatedAt, pageW - marginX, 7, { align: 'right' });
+      block.querySelectorAll('table.report-table').forEach(table => {
+        const rows = Array.from(table.querySelectorAll('tr'))
+          .map(tr => Array.from(tr.querySelectorAll('td')).map(td => td.textContent.replace(/\s+/g, ' ').trim()))
+          .filter(r => r.length && r.some(c => c));
+        if (rows.length) drawTable(rows);
+      });
 
-    const thisSliceH = Math.min(sliceHpx, canvas.height - offsetY);
-    const pageCanvas = document.createElement('canvas');
-    pageCanvas.width = canvas.width;
-    pageCanvas.height = thisSliceH;
-    const ctx = pageCanvas.getContext('2d');
-    ctx.drawImage(canvas, 0, offsetY, canvas.width, thisSliceH, 0, 0, canvas.width, thisSliceH);
+      block.querySelectorAll('.report-note').forEach(n => {
+        const t = n.textContent.replace(/\s+/g, ' ').trim();
+        if (!t) return;
+        ensureSpace(6);
+        pdf.setFontSize(7.6); pdf.setTextColor(140, 140, 140);
+        cursorY += _drawWrappedText(pdf, t, marginX, cursorY + 3, contentW, 3.8) + 3;
+      });
 
-    const imgHmm = thisSliceH * mmPerPx;
-    pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', marginX, marginTop, contentWmm, imgHmm);
+      block.querySelectorAll('.report-alert').forEach(a => drawAlertBox(a.textContent.trim()));
 
-    offsetY += thisSliceH;
+      cursorY += 4;
+      continue;
+    }
+
+    // fallback genérico para qualquer outro bloco de texto
+    const txt = block.textContent.replace(/\s+/g, ' ').trim();
+    if (txt) {
+      ensureSpace(6);
+      pdf.setFontSize(9); pdf.setTextColor(40, 40, 40);
+      cursorY += _drawWrappedText(pdf, txt, marginX, cursorY + 3.5, contentW, 4.6) + 3;
+    }
   }
 }
 
@@ -3151,6 +3195,48 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
     pdf.line(marginX, 10, pageW - marginX, 10);
   }
 
+  function newPageForCards() {
+    pdf.addPage('a4', 'portrait');
+    pageIndex++;
+    cursorY = 16;
+    drawPageHeader();
+  }
+
+  // Tabela nativa (texto), com cabeçalho fixo e quebra de página por linha
+  function drawNativeTable(headers, rows) {
+    const colCount = headers.length;
+    const colW = contentW / colCount;
+    const rowH = 5.6, headerH = 6.5;
+
+    function drawTableHeader() {
+      pdf.setFillColor(15, 20, 25);
+      pdf.rect(marginX, cursorY, contentW, headerH, 'F');
+      pdf.setFontSize(8); pdf.setTextColor(255, 255, 255); pdf.setFont(undefined, 'bold');
+      headers.forEach((h, ci) => pdf.text(h, marginX + ci * colW + 2, cursorY + headerH / 2 + 1.4));
+      pdf.setFont(undefined, 'normal');
+      cursorY += headerH;
+    }
+
+    if (cursorY + headerH + rowH > pageH - marginBottom) newPageForCards();
+    drawTableHeader();
+
+    rows.forEach((r, ri) => {
+      if (cursorY + rowH > pageH - marginBottom) {
+        newPageForCards();
+        drawTableHeader();
+      }
+      pdf.setFillColor(ri % 2 === 0 ? 246 : 255, ri % 2 === 0 ? 248 : 255, ri % 2 === 0 ? 249 : 255);
+      pdf.rect(marginX, cursorY, contentW, rowH, 'F');
+      pdf.setFontSize(8.4); pdf.setTextColor(40, 40, 40);
+      r.forEach((cell, ci) => {
+        const wrapped = pdf.splitTextToSize(String(cell ?? '—'), colW - 3);
+        pdf.text(wrapped[0] || '', marginX + ci * colW + 2, cursorY + rowH / 2 + 1.4);
+      });
+      cursorY += rowH;
+    });
+    cursorY += 4;
+  }
+
   drawPageHeader();
 
   items.forEach(item => {
@@ -3159,13 +3245,11 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
     const linhas = item.resumoLinhas || [];
     // Estimativa de altura do texto (jsPDF quebra depois com splitTextToSize real)
     const estTextH = linhas.reduce((acc, l) => acc + Math.ceil(l.length / 95) * 4.6, 0) + 4;
-    const totalCardH = titleH + imgHmm + estTextH + 8;
+    const estTableH = item.tabela ? 6.5 + Math.min(item.tabela.rows.length, 6) * 5.6 : 0;
+    const totalCardH = titleH + imgHmm + estTextH + estTableH + 8;
 
-    if (cursorY + totalCardH > pageH - marginBottom && cursorY > 20) {
-      pdf.addPage('a4', 'portrait');
-      pageIndex++;
-      cursorY = 16;
-      drawPageHeader();
+    if (cursorY + Math.min(totalCardH, 60) > pageH - marginBottom && cursorY > 20) {
+      newPageForCards();
     }
 
     pdf.setFont(undefined, 'bold');
@@ -3185,6 +3269,11 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
       pdf.text(wrapped, marginX, cursorY + 3.2);
       cursorY += wrapped.length * 4.6;
     });
+
+    if (item.tabela) {
+      cursorY += 2;
+      drawNativeTable(item.tabela.headers, item.tabela.rows);
+    }
 
     cursorY += 5;
     pdf.setDrawColor(225, 225, 225); pdf.setLineWidth(0.2);
@@ -3215,7 +3304,7 @@ window.exportReportPDF = async function() {
     // ── PARTE 1 — Resumo (cópia fiel do relatório visual já exibido
     // no painel do app; nenhuma reconstrução de layout aqui) ────────
     const reportContentEl = document.getElementById('reportContent');
-    await _renderVisualReportIntoPDF(pdf, reportContentEl, now);
+    _renderVisualReportAsText(pdf, reportContentEl, now);
 
     // Nome do arquivo a partir das zonas já visíveis no relatório
     const allZoneBadges = reportContentEl ? reportContentEl.querySelectorAll('.report-zone-badge') : [];
@@ -3268,7 +3357,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V38</span>
+    <span style="color:#00ACCD">V39</span>
   </div>
 </body>
 </html>
