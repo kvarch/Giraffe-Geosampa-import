@@ -3643,7 +3643,27 @@ async function analisarBloco3Patrimonio(terrainGeom, wkt) {
         const p = f.properties || {};
         linhas.push(`Área Envoltória IPHAN: ${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_iphan || '—'}`);
       });
-      results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: [
+            'MapaBase_Topografico',
+            'patrimonio_cultural_bem_tombado',
+            'patrimonio_cultural_acervo_tombado',
+            'patrimonio_cultural_bairro_ambiental',
+            'patrimonio_cultural_area_envoltoria_CONDEPHAAT',
+            'patrimonio_cultural_area_envoltoria_CONPRESP',
+            'patrimonio_cultural_area_envoltoria_IPHAN',
+          ],
+          styles: [null, null, null, null, null, null, null],
+          marginMeters: 200, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Bens Protegidos] falha ao gerar imagem:', e);
+        log('warn', `Bens Protegidos: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
       results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: false, resumoLinhas: ['Sem bens tombados, acervo, bairro ambiental ou área envoltória (CONPRESP/CONDEPHAAT/IPHAN) incidentes.'], imagem: null });
     }
@@ -4112,7 +4132,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V49</span>
+    <span style="color:#00ACCD">V50</span>
   </div>
 </body>
 </html>
