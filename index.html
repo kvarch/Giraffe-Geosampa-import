@@ -3044,8 +3044,34 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
 // Lê o próprio #reportContent (mesmo HTML já exibido no painel do app)
 // e desenha o conteúdo como texto/tabelas nativas do jsPDF — nada é
 // recalculado aqui, só lido e formatado. Fundo claro, sem screenshot.
+
+// pdf.splitTextToSize só quebra em espaços. Textos densos (ex: dados de
+// tabela como "d500m²500-1k1k-2,5k2,5k-5k5k-10k>10k") têm trechos sem
+// espaço mais largos que a coluna, e passavam direto da margem. Esta
+// função quebra primeiro em espaços e, se alguma linha ainda ultrapassar
+// a largura, força a quebra por caractere nessa linha especificamente.
+function _safeWrap(pdf, text, maxW) {
+  const raw = pdf.splitTextToSize(String(text ?? ''), maxW);
+  const out = [];
+  raw.forEach(line => {
+    if (pdf.getTextWidth(line) <= maxW) { out.push(line); return; }
+    let remaining = line;
+    while (remaining.length) {
+      let lo = 1, hi = remaining.length, fit = 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (pdf.getTextWidth(remaining.slice(0, mid)) <= maxW) { fit = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      out.push(remaining.slice(0, fit));
+      remaining = remaining.slice(fit);
+    }
+  });
+  return out.length ? out : [''];
+}
+
 function _drawWrappedText(pdf, text, x, y, maxW, lineH) {
-  const wrapped = pdf.splitTextToSize(text, maxW);
+  const wrapped = _safeWrap(pdf, text, maxW);
   pdf.text(wrapped, x, y);
   return wrapped.length * lineH;
 }
@@ -3072,7 +3098,7 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
   }
   function drawAlertBox(text) {
     pdf.setFontSize(8.5);
-    const wrapped = pdf.splitTextToSize(text, contentW - 6);
+    const wrapped = _safeWrap(pdf, text, contentW - 6);
     const h = wrapped.length * 4.4 + 4;
     ensureSpace(h + 4);
     pdf.setFillColor(253, 240, 210);
@@ -3084,14 +3110,14 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
   function drawTable(rows) {
     const colCount = Math.max(...rows.map(r => r.length), 1);
     const colW = contentW / colCount;
-    const rowH = 5.6;
+    const lineH = 4.0;
     rows.forEach((r, ri) => {
+      pdf.setFontSize(8.6);
       if (r.length < colCount) {
         // linha corrida (ex: cabeçalho de grupo ou observação com colspan
-        // na versão visual) — quebra texto para não ultrapassar a margem
-        pdf.setFontSize(8.6);
-        const wrapped = pdf.splitTextToSize(r.join(' — '), contentW - 4);
-        const thisRowH = Math.max(rowH, wrapped.length * 4.2 + 1.6);
+        // na versão visual) — ocupa a largura toda
+        const wrapped = _safeWrap(pdf, r.join(' — '), contentW - 4);
+        const thisRowH = Math.max(5.6, wrapped.length * lineH + 1.6);
         ensureSpace(thisRowH);
         pdf.setFillColor(ri % 2 === 0 ? 246 : 255, ri % 2 === 0 ? 248 : 255, ri % 2 === 0 ? 249 : 255);
         pdf.rect(marginX, cursorY, contentW, thisRowH, 'F');
@@ -3101,15 +3127,19 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
         pdf.setFont(undefined, 'normal');
         cursorY += thisRowH;
       } else {
-        ensureSpace(rowH);
+        // linha normal — quebra CADA célula e desenha todas as linhas;
+        // a altura da linha se ajusta à célula que precisar de mais espaço
+        const cellsWrapped = r.map(cell => _safeWrap(pdf, cell, colW - 3));
+        const maxLines = Math.max(...cellsWrapped.map(w => w.length), 1);
+        const thisRowH = Math.max(5.6, maxLines * lineH + 1.6);
+        ensureSpace(thisRowH);
         pdf.setFillColor(ri % 2 === 0 ? 246 : 255, ri % 2 === 0 ? 248 : 255, ri % 2 === 0 ? 249 : 255);
-        pdf.rect(marginX, cursorY, contentW, rowH, 'F');
-        pdf.setFontSize(8.6); pdf.setTextColor(40, 40, 40);
-        r.forEach((cell, ci) => {
-          const wrapped = pdf.splitTextToSize(cell, colW - 3);
-          pdf.text(wrapped[0] || '', marginX + ci * colW + 2, cursorY + rowH / 2 + 1.4);
+        pdf.rect(marginX, cursorY, contentW, thisRowH, 'F');
+        pdf.setTextColor(40, 40, 40);
+        cellsWrapped.forEach((wrapped, ci) => {
+          pdf.text(wrapped, marginX + ci * colW + 2, cursorY + 4);
         });
-        cursorY += rowH;
+        cursorY += thisRowH;
       }
     });
     cursorY += 3;
@@ -3143,7 +3173,7 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
       }
       tags.forEach(t => {
         pdf.setFontSize(8.5); pdf.setTextColor(0, 130, 160);
-        const wrapped = pdf.splitTextToSize(t.textContent.trim(), contentW);
+        const wrapped = _safeWrap(pdf, t.textContent.trim(), contentW);
         ensureSpace(wrapped.length * 4);
         pdf.text(wrapped, marginX, cursorY + 3);
         cursorY += wrapped.length * 4 + 1;
@@ -3243,18 +3273,21 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
     drawTableHeader();
 
     rows.forEach((r, ri) => {
-      if (cursorY + rowH > pageH - marginBottom) {
+      pdf.setFontSize(8.4);
+      const cellsWrapped = r.map(cell => _safeWrap(pdf, String(cell ?? '—'), colW - 3));
+      const maxLines = Math.max(...cellsWrapped.map(w => w.length), 1);
+      const thisRowH = Math.max(rowH, maxLines * 4.0 + 1.6);
+      if (cursorY + thisRowH > pageH - marginBottom) {
         newPageForCards();
         drawTableHeader();
       }
       pdf.setFillColor(ri % 2 === 0 ? 246 : 255, ri % 2 === 0 ? 248 : 255, ri % 2 === 0 ? 249 : 255);
-      pdf.rect(marginX, cursorY, contentW, rowH, 'F');
-      pdf.setFontSize(8.4); pdf.setTextColor(40, 40, 40);
-      r.forEach((cell, ci) => {
-        const wrapped = pdf.splitTextToSize(String(cell ?? '—'), colW - 3);
-        pdf.text(wrapped[0] || '', marginX + ci * colW + 2, cursorY + rowH / 2 + 1.4);
+      pdf.rect(marginX, cursorY, contentW, thisRowH, 'F');
+      pdf.setTextColor(40, 40, 40);
+      cellsWrapped.forEach((wrapped, ci) => {
+        pdf.text(wrapped, marginX + ci * colW + 2, cursorY + 4);
       });
-      cursorY += rowH;
+      cursorY += thisRowH;
     });
     cursorY += 4;
   }
@@ -3287,7 +3320,7 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
 
     pdf.setFontSize(9); pdf.setTextColor(40, 40, 40);
     linhas.forEach(line => {
-      const wrapped = pdf.splitTextToSize(line, contentW);
+      const wrapped = _safeWrap(pdf, line, contentW);
       pdf.text(wrapped, marginX, cursorY + 3.2);
       cursorY += wrapped.length * 4.6;
     });
@@ -3379,7 +3412,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V40</span>
+    <span style="color:#00ACCD">V41</span>
   </div>
 </body>
 </html>
