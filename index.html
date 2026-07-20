@@ -3004,7 +3004,8 @@ async function renderCompositeMapImage(opts) {
 //                                           (MaxScaleDenominator 5001)
 //  GEOSAMPA_area_cedida_cidadao          → multipolygon.GEOPATRI.AreaCedida.Cidadao.CamadaLabel
 //  GEOSAMPA_cadastro_area_publica_cidadao→ multipolygon.CadastroAreaPublica.CamadaLabel
-//  segmento_logradouro                   → line.Logradouro.CamadaLabel
+// (Logradouro Confrontante foi movido para o Bloco Viário próprio —
+// seguindo a nova estrutura do roteiro: "2. SISTEMA VIÁRIO")
 // Retorna array de itens: { id, titulo, temInterferencia, resumoLinhas:[...], imagem:{dataUrl,width,height}|null }
 async function analisarBloco1Cadastral(terrainGeom, wkt) {
   const results = [];
@@ -3043,9 +3044,11 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
   }
 
   // 2) Lote — tabela de atributos de todos os lotes que tocam o terreno
+  let _lotesFeatsParaComparacao = [];
   try {
     const gj = await fetchWFSByGeom('geoportal:lote_cidadao', wkt, 50);
     const feats = gj?.features || [];
+    _lotesFeatsParaComparacao = feats;
     if (feats.length > 0) {
       const headers = ['Dígito SQL', 'Endereço', 'Área Terreno (m²)'];
       const rows = feats.map(f => {
@@ -3059,6 +3062,31 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
     }
   } catch (e) {
     results.push({ id: 'lote', titulo: 'Cadastro — Lotes (SQL)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 2b) Comparação de Áreas — Soma(Áreas dos Lotes IPTU) vs Área da
+  // geometria desenhada no Giraffe. Reaproveita os lotes já buscados no
+  // item anterior — não faz nova consulta.
+  try {
+    if (_lotesFeatsParaComparacao.length > 0 && terrainGeom && typeof turf !== 'undefined') {
+      const somaLotes = _lotesFeatsParaComparacao.reduce((acc, f) => acc + (parseFloat(f.properties?.qt_area_terreno) || 0), 0);
+      const areaGiraffe = turf.area({ type: 'Feature', geometry: terrainGeom, properties: {} });
+      if (somaLotes > 0) {
+        const diffPct = Math.abs(somaLotes - areaGiraffe) / somaLotes * 100;
+        const linhas = [
+          `Soma das áreas dos lotes (Cadastro Fiscal/IPTU): ${Math.round(somaLotes).toLocaleString('pt-BR')} m²`,
+          `Área da geometria desenhada no Giraffe: ${Math.round(areaGiraffe).toLocaleString('pt-BR')} m²`,
+          `Diferença: ${diffPct.toFixed(1)}%${diffPct > 5 ? ' — ⚠ divergência acima de 5%, conferir a geometria desenhada ou o cadastro fiscal' : ' — dentro da tolerância de 5%'}`,
+        ];
+        results.push({ id: 'comparacao_areas', titulo: 'Cadastro — Comparação de Áreas (Lotes × Geometria Giraffe)', temInterferencia: diffPct > 5, resumoLinhas: linhas, imagem: null });
+      } else {
+        results.push({ id: 'comparacao_areas', titulo: 'Cadastro — Comparação de Áreas (Lotes × Geometria Giraffe)', temInterferencia: false, resumoLinhas: ['Área dos lotes não disponível para comparação.'], imagem: null });
+      }
+    } else {
+      results.push({ id: 'comparacao_areas', titulo: 'Cadastro — Comparação de Áreas (Lotes × Geometria Giraffe)', temInterferencia: false, resumoLinhas: ['Sem lotes identificados para comparar.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'comparacao_areas', titulo: 'Cadastro — Comparação de Áreas (Lotes × Geometria Giraffe)', temInterferencia: false, resumoLinhas: [`Erro no cálculo: ${e.message}`], imagem: null });
   }
 
   // 3) Área Cedida — imagem WMS nativa + overlay geométrico real
@@ -3130,7 +3158,16 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
     results.push({ id: 'cap', titulo: 'Cadastro de Área Pública (CAP)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
-  // 5) Logradouro confrontante — buffer de 8m (a via raramente toca o
+  return results;
+}
+
+// ── Bloco Viário — Sistema Viário ─────────────────────────────────────
+// Item movido do antigo Bloco 1 (Cadastro) a pedido do usuário, seguindo
+// a nova estrutura do roteiro: "2. SISTEMA VIÁRIO".
+async function analisarBlocoViario(terrainGeom, wkt) {
+  const results = [];
+
+  // Logradouro confrontante — buffer de 8m (a via raramente toca o
   // polígono do lote diretamente) + imagem WMS nativa
   try {
     let logrWkt = wkt;
@@ -3162,12 +3199,12 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
         console.error('[PDF][Logradouro] falha ao gerar imagem:', e);
         log('warn', `Logradouro: imagem WMS falhou — ${e.message}`);
       }
-      results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+      results.push({ id: 'logradouro', titulo: 'Sistema Viário — Logradouro Confrontante', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
-      results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: false, resumoLinhas: ['Nenhum logradouro confrontante identificado nesse buffer.'], imagem: null });
+      results.push({ id: 'logradouro', titulo: 'Sistema Viário — Logradouro Confrontante', temInterferencia: false, resumoLinhas: ['Nenhum logradouro confrontante identificado nesse buffer.'], imagem: null });
     }
   } catch (e) {
-    results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+    results.push({ id: 'logradouro', titulo: 'Sistema Viário — Logradouro Confrontante', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
   return results;
@@ -3306,6 +3343,37 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
   } catch (e) {
     console.error('[PDF][ZEUP/ZEMP]', e);
     results.push({ id: 'zeup_zemp', titulo: 'Legislação — Zoneamento Ativado (ZEUP/ZEMP)', temInterferencia: false, resumoLinhas: [`Erro na consulta (GetFeatureInfo): ${e.message}`], imagem: null });
+  }
+
+  // 3b) ZEPEC — movido do bloco Patrimônio Cultural para cá, seguindo a
+  // nova estrutura do roteiro ("3. LEGISLAÇÃO URBANA"). Atributo dentro de
+  // patrimonio_cultural_bem_tombado (não é camada própria).
+  try {
+    const gj = await fetchWFSByGeom('geoportal:patrimonio_cultural_bem_tombado', wkt, 10);
+    const feats = (gj?.features || []).filter(f => (f.properties?.tx_zepec || f.properties?.tx_tipo_categoria_zepec));
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `ZEPEC: ${p.tx_zepec || '—'} — Categoria: ${p.tx_tipo_categoria_zepec || p.cd_tipo_categoria_zepec || '—'}`;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'zoneamento_2016_map4'],
+          styles: [null, null],
+          marginMeters: 150, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][ZEPEC] falha ao gerar imagem:', e);
+        log('warn', `ZEPEC: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'zepec', titulo: 'Legislação — ZEPEC', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'zepec', titulo: 'Legislação — ZEPEC', temInterferencia: false, resumoLinhas: ['Sem enquadramento ZEPEC identificado.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'zepec', titulo: 'Legislação — ZEPEC', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
   // 4) Macrozona e Macroárea (Macrozona não localizada como camada própria)
@@ -3542,18 +3610,74 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
     results.push({ id: 'verticalizacao', titulo: 'Legislação — Verticalização da Quadra', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
+  // 11) Utilidade Pública e Interesse Social (DUP)
+  try {
+    const gj = await fetchWFSByGeom('geoportal:planta_dup_dis_pd', wkt, 10);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `Decreto nº ${p.nr_dispositivo_legal || '—'}/${p.an_dispositivo_legal || '—'} (${p.dt_publicacao_decreto || '—'}) — Planta: ${p.nm_planta_terreno || p.nm_planta_desap || '—'} — status: ${p.dc_status_planta_terreno || '—'}`;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'planta_dup_dis_pd'],
+          styles: [null, null],
+          marginMeters: 150, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][DUP] falha ao gerar imagem:', e);
+        log('warn', `DUP: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'dup', titulo: 'Legislação — Utilidade Pública e Interesse Social (DUP)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'dup', titulo: 'Legislação — Utilidade Pública e Interesse Social (DUP)', temInterferencia: false, resumoLinhas: ['Sem decreto de utilidade pública/desapropriação incidente.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'dup', titulo: 'Legislação — Utilidade Pública e Interesse Social (DUP)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 12) Áreas com Restrições Geotécnicas
+  try {
+    const gj = await fetchWFSByGeom('geoportal:restricao_geotecnica', wkt, 10);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `Perímetro: ${p.nm_perimetro || '—'} — ${p.tx_regulamentacao || 'sem regulamentação detalhada'}`;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'restricao_geotecnica'],
+          styles: [null, null],
+          marginMeters: 150, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Restrições Geotécnicas] falha ao gerar imagem:', e);
+        log('warn', `Restrições Geotécnicas: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'restricao_geotecnica', titulo: 'Legislação — Áreas com Restrições Geotécnicas', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'restricao_geotecnica', titulo: 'Legislação — Áreas com Restrições Geotécnicas', temInterferencia: false, resumoLinhas: ['Sem restrição geotécnica incidente.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'restricao_geotecnica', titulo: 'Legislação — Áreas com Restrições Geotécnicas', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
   return results;
 }
 
 // ── Bloco 3 — Patrimônio Histórico ────────────────────────────────────
-// Camadas WFS confirmadas: patrimonio_cultural_bem_tombado (inclui ZEPEC
-// como atributo — tx_zepec/tx_tipo_categoria_zepec, não é camada própria),
+// ZEPEC foi movido para o Bloco 2 (Legislação Urbana), seguindo a nova
+// estrutura do roteiro do usuário — não é mais tratado aqui.
+// Camadas WFS confirmadas: patrimonio_cultural_bem_tombado,
 // patrimonio_cultural_acervo_tombado, patrimonio_cultural_bairro_ambiental,
 // patrimonio_cultural_area_envoltoria_CONDEPHAAT/_CONPRESP/_IPHAN,
 // quadra_fiscal + lote_cidadao (para montar o SQL do item CIT).
-// zoneamento_2016_map4 (Mapa 4 da LPUOS, onde ficam os polígonos de ZEPEC)
-// só existe no WMS — usado aqui só para a imagem, não para checar
-// interferência (isso vem do bem_tombado, que tem WFS).
 //
 // Limitação honesta sobre o item CIT: pesquisei e não existe um link
 // direto (deep-link) que abra o resultado da consulta já preenchido — o
@@ -3565,34 +3689,7 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
 async function analisarBloco3Patrimonio(terrainGeom, wkt) {
   const results = [];
 
-  // 1) ZEPEC — atributo dentro de patrimonio_cultural_bem_tombado
-  try {
-    const gj = await fetchWFSByGeom('geoportal:patrimonio_cultural_bem_tombado', wkt, 10);
-    const feats = (gj?.features || []).filter(f => (f.properties?.tx_zepec || f.properties?.tx_tipo_categoria_zepec));
-    if (feats.length > 0) {
-      const linhas = feats.map(f => {
-        const p = f.properties || {};
-        return `ZEPEC: ${p.tx_zepec || '—'} — Categoria: ${p.tx_tipo_categoria_zepec || p.cd_tipo_categoria_zepec || '—'}`;
-      });
-      let img = null;
-      try {
-        img = await renderCompositeMapImage({
-          terrainGeom,
-          layers: ['MapaBase_Topografico', 'zoneamento_2016_map4'],
-          styles: [null, null],
-          marginMeters: 150, widthPx: 1000, heightPx: 750,
-        });
-      } catch (e) {
-        console.error('[PDF][ZEPEC] falha ao gerar imagem:', e);
-        log('warn', `ZEPEC: imagem WMS falhou — ${e.message}`);
-      }
-      results.push({ id: 'zepec', titulo: 'Patrimônio — ZEPEC', temInterferencia: true, resumoLinhas: linhas, imagem: img });
-    } else {
-      results.push({ id: 'zepec', titulo: 'Patrimônio — ZEPEC', temInterferencia: false, resumoLinhas: ['Sem enquadramento ZEPEC identificado.'], imagem: null });
-    }
-  } catch (e) {
-    results.push({ id: 'zepec', titulo: 'Patrimônio — ZEPEC', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
-  }
+
 
   // 2) Bens Protegidos — dividido em itens separados (um por camada), cada
   // um com sua própria imagem. Sobrepor todas as camadas numa imagem só
@@ -4060,7 +4157,31 @@ window.exportReportPDF = async function() {
       log('warn', `Bloco cadastral do PDF falhou parcialmente: ${e.message}`);
     }
 
-    // ── PARTE 3 — Legislação Urbana e Potencial Construtivo (Bloco 2,
+    // ── PARTE 3 — Sistema Viário (Bloco Viário, página própria) ────────
+    try {
+      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+
+      if (terrainWKTForPDF) {
+        log('info', 'Relatório PDF: analisando Sistema Viário...');
+        const blocoViario = await analisarBlocoViario(terrainGeomForPDF, terrainWKTForPDF);
+
+        const resumoCardViario = {
+          titulo: 'Resumo Complementar — Sistema Viário',
+          resumoLinhas: blocoViario.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+          imagem: null,
+        };
+        const cardsParaExibirViario = [resumoCardViario, ...blocoViario.filter(it => it.temInterferencia)];
+
+        pdf.addPage('a4', 'portrait');
+        _addBloco1CardsToPDF(pdf, cardsParaExibirViario, now);
+      }
+    } catch (e) {
+      console.error('[PDF][BlocoViario]', e);
+      log('warn', `Bloco de sistema viário do PDF falhou parcialmente: ${e.message}`);
+    }
+
+    // ── PARTE 4 — Legislação Urbana e Potencial Construtivo (Bloco 2,
     // páginas próprias) ───────────────────────────────────────────────
     try {
       const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
@@ -4085,7 +4206,7 @@ window.exportReportPDF = async function() {
       log('warn', `Bloco de legislação urbana do PDF falhou parcialmente: ${e.message}`);
     }
 
-    // ── PARTE 4 — Patrimônio Histórico (Bloco 3, páginas próprias) ─────
+    // ── PARTE 5 — Patrimônio Histórico (Bloco 3, páginas próprias) ─────
     try {
       const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
       const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
@@ -4128,7 +4249,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V51</span>
+    <span style="color:#00ACCD">V52</span>
   </div>
 </body>
 </html>
