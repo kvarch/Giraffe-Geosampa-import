@@ -1885,9 +1885,10 @@ async function _runReport(features) {
   let filterMode = 'bbox';
   let terrainLabel = '';
   let terrainArea = null;
+  let merged = null;
 
   if (features && features.length > 0) {
-    const merged = mergeToSinglePolygon(features);
+    merged = mergeToSinglePolygon(features);
     if (merged) {
       wkt = geojsonToWKT(merged);
       filterMode = 'intersects';
@@ -1921,6 +1922,10 @@ async function _runReport(features) {
     document.getElementById('reportEmpty').style.display = 'flex';
     return;
   }
+
+  // Guarda geometria/WKT do terreno para o Bloco 1 (Cadastro) do PDF exportado
+  window._kvTerrainGeomForReport = merged;
+  window._kvTerrainWKTForReport  = wkt;
 
   setReportStatus('loading', `Consultando GeoSampa com ${filterMode === 'intersects' ? 'polígono exato' : 'BBOX'}...`);
   log('info', `Relatório: filtro ${filterMode.toUpperCase()} — ${wkt.slice(0,60)}...`);
@@ -2735,6 +2740,331 @@ function drawRecuosDiagram(canvas, recuoF, recuoL) {
 }
 
 // ── EXPORT FUNCTION ────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+// RELATÓRIO PDF — MOTOR DE ANÁLISE POR CAMADA (Bloco 1: Cadastro e
+// Base Territorial) + composição de imagens (mapa raster + overlay
+// vetorial via canvas, e tabelas de atributos)
+// ══════════════════════════════════════════════════════════════════
+
+const WMS_BASE_RASTER = 'https://wms.geosampa.prefeitura.sp.gov.br/geoserver/geoportal/wms';
+
+// Monta URL proxiada no modo "path" do worker (sem encode), necessário
+// para que o {bbox} montado aqui e qualquer parâmetro extra funcionem.
+function buildProxiedWMS(url) {
+  const b = (proxyUrl || '').replace(/\/$/, '');
+  if (!b) return url;
+  return `${b}/${url}`;
+}
+
+function lonLatToWebMercator(lng, lat) {
+  const R = 6378137.0;
+  const x = R * (lng * Math.PI / 180);
+  const y = R * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+  return [x, y];
+}
+
+function _pxProject(lng, lat, bbox3857, w, h) {
+  const [x, y] = lonLatToWebMercator(lng, lat);
+  const px = (x - bbox3857.minX) / (bbox3857.maxX - bbox3857.minX) * w;
+  const py = h - (y - bbox3857.minY) / (bbox3857.maxY - bbox3857.minY) * h;
+  return [px, py];
+}
+
+function loadImageCORS(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Falha ao carregar imagem WMS'));
+    img.src = url;
+  });
+}
+
+function _drawGeomOnCanvas(ctx, geometry, bbox3857, w, h, style) {
+  if (!geometry) return;
+  const s = Object.assign({ stroke: '#ff3b30', fill: null, fillOpacity: 0.2, lineWidth: 2.5 }, style || {});
+  const drawRing = (ring) => {
+    ctx.beginPath();
+    ring.forEach(([lng, lat], i) => {
+      const [px, py] = _pxProject(lng, lat, bbox3857, w, h);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.closePath();
+    if (s.fill) { ctx.globalAlpha = s.fillOpacity; ctx.fillStyle = s.fill; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = s.stroke; ctx.lineWidth = s.lineWidth; ctx.stroke();
+  };
+  const drawLine = (line) => {
+    ctx.beginPath();
+    line.forEach(([lng, lat], i) => {
+      const [px, py] = _pxProject(lng, lat, bbox3857, w, h);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.strokeStyle = s.stroke; ctx.lineWidth = s.lineWidth; ctx.stroke();
+  };
+  const t = geometry.type;
+  if (t === 'Polygon') geometry.coordinates.forEach(drawRing);
+  else if (t === 'MultiPolygon') geometry.coordinates.forEach(poly => poly.forEach(drawRing));
+  else if (t === 'LineString') drawLine(geometry.coordinates);
+  else if (t === 'MultiLineString') geometry.coordinates.forEach(drawLine);
+  else if (t === 'Point') {
+    const [px, py] = _pxProject(geometry.coordinates[0], geometry.coordinates[1], bbox3857, w, h);
+    ctx.beginPath(); ctx.arc(px, py, 5, 0, 2 * Math.PI); ctx.fillStyle = s.stroke; ctx.fill();
+  }
+}
+
+// Gera um mapa 2D (JPEG dataURL): fundo WMS (contexto) + overlays vetoriais
+// (ex: quadra fiscal) + contorno do terreno sempre em destaque (vermelho).
+async function renderCompositeMapImage(opts) {
+  const {
+    terrainGeom, overlays = [], backgroundLayer = 'MapaBase_Topografico',
+    marginMeters = 120, widthPx = 900, heightPx = 650,
+  } = opts;
+  if (!terrainGeom) return null;
+
+  const bboxWGS = expandBBOX(featureToBBOX({ geometry: terrainGeom }), marginMeters);
+  const [minX3857, minY3857] = lonLatToWebMercator(bboxWGS.minX, bboxWGS.minY);
+  const [maxX3857, maxY3857] = lonLatToWebMercator(bboxWGS.maxX, bboxWGS.maxY);
+  const bbox3857 = { minX: minX3857, minY: minY3857, maxX: maxX3857, maxY: maxY3857 };
+
+  const wmsUrl = `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetMap&layers=${encodeURIComponent(backgroundLayer)}&srs=EPSG:3857&width=${widthPx}&height=${heightPx}&format=image/jpeg&bbox=${bbox3857.minX},${bbox3857.minY},${bbox3857.maxX},${bbox3857.maxY}`;
+  const tileUrl = buildProxiedWMS(wmsUrl);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = widthPx; canvas.height = heightPx;
+  const ctx = canvas.getContext('2d');
+
+  try {
+    const img = await loadImageCORS(tileUrl);
+    ctx.drawImage(img, 0, 0, widthPx, heightPx);
+  } catch (e) {
+    ctx.fillStyle = '#e8e8e8'; ctx.fillRect(0, 0, widthPx, heightPx);
+    ctx.fillStyle = '#888'; ctx.font = '16px sans-serif';
+    ctx.fillText('Fundo WMS indisponível no momento da geração', 20, 30);
+  }
+
+  overlays.forEach(ov => _drawGeomOnCanvas(ctx, ov.geometry, bbox3857, widthPx, heightPx, ov.style));
+  _drawGeomOnCanvas(ctx, terrainGeom, bbox3857, widthPx, heightPx,
+    { stroke: '#ff3b30', fill: '#ff3b30', fillOpacity: 0.12, lineWidth: 3 });
+
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
+// Gera uma imagem de tabela (para itens como "Lote", onde o roteiro pede
+// uma captura da tabela de atributos de todos os elementos incidentes).
+function renderTableImageCanvas(title, headers, rows) {
+  const colWidths = headers.map((h, i) => Math.max(
+    130, h.length * 8 + 24,
+    ...(rows.length ? rows.map(r => String(r[i] ?? '').length * 6.5 + 24) : [0])
+  ));
+  const totalW = colWidths.reduce((a, b) => a + b, 0);
+  const rowH = 26, headerH = 32, titleH = 34;
+  const totalH = titleH + headerH + Math.max(rows.length, 1) * rowH + 12;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = totalW + 20; canvas.height = totalH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = '#111111'; ctx.font = 'bold 16px Arial, sans-serif';
+  ctx.fillText(title, 10, 24);
+
+  let x = 10, y = titleH;
+  ctx.fillStyle = '#0f1419'; ctx.fillRect(x, y, totalW, headerH);
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 12px Arial, sans-serif';
+  let cx = x;
+  headers.forEach((h, i) => { ctx.fillText(h, cx + 8, y + headerH / 2 + 4); cx += colWidths[i]; });
+  y += headerH;
+
+  rows.forEach((r, ri) => {
+    ctx.fillStyle = ri % 2 === 0 ? '#f7f9fa' : '#eef1f2';
+    ctx.fillRect(x, y, totalW, rowH);
+    ctx.fillStyle = '#222222'; ctx.font = '11px Arial, sans-serif';
+    let cx2 = x;
+    r.forEach((val, i) => { ctx.fillText(String(val ?? '—'), cx2 + 8, y + rowH / 2 + 4); cx2 += colWidths[i]; });
+    y += rowH;
+  });
+
+  return canvas.toDataURL('image/jpeg', 0.92);
+}
+
+// ── Bloco 1 — Cadastro e Base Territorial ────────────────────────────
+// Camadas WFS confirmadas: quadra_fiscal, lote_cidadao,
+// GEOSAMPA_area_cedida_cidadao, GEOSAMPA_cadastro_area_publica_cidadao,
+// segmento_logradouro. Retorna um array de itens no formato:
+// { id, titulo, temInterferencia, resumoLinhas:[...], imagemDataURL }
+async function analisarBloco1Cadastral(terrainGeom, wkt) {
+  const results = [];
+
+  // 1) Setor e Quadra (malha fiscal)
+  try {
+    const gj = await fetchWFSByGeom('geoportal:quadra_fiscal', wkt, 20);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        const tipo = p.cd_tipo_quadra === 'F' ? 'Fiscal' : (p.tx_tipo_quadra || p.cd_tipo_quadra || '—');
+        return `Setor ${p.cd_setor_fiscal || '—'} · Quadra ${p.cd_quadra_fiscal || '—'}-${p.cd_subquadra_fiscal || '—'} (${tipo})`;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          overlays: feats.map(f => ({ geometry: f.geometry, style: { stroke: '#0088ff', fill: '#0088ff', fillOpacity: 0.18, lineWidth: 2 } })),
+          backgroundLayer: 'MapaBase_Topografico',
+        });
+      } catch (_) {}
+      results.push({ id: 'setor_quadra', titulo: 'Cadastro — Setor e Quadra Fiscal', temInterferencia: true, resumoLinhas: linhas, imagemDataURL: img });
+    } else {
+      results.push({ id: 'setor_quadra', titulo: 'Cadastro — Setor e Quadra Fiscal', temInterferencia: false, resumoLinhas: ['Não foi possível identificar Setor/Quadra para este terreno.'], imagemDataURL: null });
+    }
+  } catch (e) {
+    results.push({ id: 'setor_quadra', titulo: 'Cadastro — Setor e Quadra Fiscal', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagemDataURL: null });
+  }
+
+  // 2) Lote — tabela de atributos de todos os lotes que tocam o terreno
+  try {
+    const gj = await fetchWFSByGeom('geoportal:lote_cidadao', wkt, 50);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const headers = ['Dígito SQL', 'Endereço', 'Área Terreno (m²)'];
+      const rows = feats.map(f => {
+        const p = f.properties || {};
+        const endereco = [p.nm_logradouro_completo, p.cd_numero_porta].filter(Boolean).join(', ');
+        return [p.cd_digito_sql || '—', endereco || '—', p.qt_area_terreno ? Number(p.qt_area_terreno).toLocaleString('pt-BR') : '—'];
+      });
+      const img = renderTableImageCanvas('Lotes incidentes no terreno', headers, rows);
+      results.push({ id: 'lote', titulo: 'Cadastro — Lotes (SQL)', temInterferencia: true, resumoLinhas: [`${feats.length} lote(s) identificado(s) tocando o terreno.`], imagemDataURL: img });
+    } else {
+      results.push({ id: 'lote', titulo: 'Cadastro — Lotes (SQL)', temInterferencia: false, resumoLinhas: ['Nenhum lote cadastral identificado.'], imagemDataURL: null });
+    }
+  } catch (e) {
+    results.push({ id: 'lote', titulo: 'Cadastro — Lotes (SQL)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagemDataURL: null });
+  }
+
+  // 3) Área Cedida — overlay geométrico com área exata de interferência
+  try {
+    const gj = await fetchWFSByGeom('geoportal:GEOSAMPA_area_cedida_cidadao', wkt, 20);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        let areaTxt = '—';
+        try {
+          if (terrainGeom && typeof turf !== 'undefined') {
+            const inter = turf.intersect(
+              { type: 'Feature', geometry: terrainGeom, properties: {} },
+              { type: 'Feature', geometry: f.geometry, properties: {} }
+            );
+            if (inter) areaTxt = Math.round(turf.area(inter)).toLocaleString('pt-BR') + ' m²';
+          }
+        } catch (_) {}
+        return `${p.dc_tipo_cessao || 'Cessão'} — cessionário: ${p.nm_cessionario || '—'} — área de interferência: ${areaTxt}`;
+      });
+      results.push({ id: 'area_cedida', titulo: 'Cadastro — Área Cedida (interferência)', temInterferencia: true, resumoLinhas: linhas, imagemDataURL: null });
+    } else {
+      results.push({ id: 'area_cedida', titulo: 'Cadastro — Área Cedida', temInterferencia: false, resumoLinhas: ['Sem interferência com áreas cedidas.'], imagemDataURL: null });
+    }
+  } catch (e) {
+    results.push({ id: 'area_cedida', titulo: 'Cadastro — Área Cedida', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagemDataURL: null });
+  }
+
+  // 4) Cadastro de Área Pública (CAP) — flag de invasão/limite direto
+  try {
+    const gj = await fetchWFSByGeom('geoportal:GEOSAMPA_cadastro_area_publica_cidadao', wkt, 20);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `CAP ${p.cd_cadastro_area_publica || '—'} — ${p.tx_descricao_poligono || 'sem descrição'} — área oficial: ${p.qt_area_oficial ? Number(p.qt_area_oficial).toLocaleString('pt-BR') + ' m²' : '—'}`;
+      });
+      results.push({ id: 'cap', titulo: '⚠ Cadastro de Área Pública (CAP) — invasão/limite', temInterferencia: true, resumoLinhas: linhas, imagemDataURL: null });
+    } else {
+      results.push({ id: 'cap', titulo: 'Cadastro de Área Pública (CAP)', temInterferencia: false, resumoLinhas: ['Sem invasão ou limite direto com CAP.'], imagemDataURL: null });
+    }
+  } catch (e) {
+    results.push({ id: 'cap', titulo: 'Cadastro de Área Pública (CAP)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagemDataURL: null });
+  }
+
+  // 5) Logradouro confrontante — precisa de buffer pois a via raramente
+  // toca literalmente o polígono do lote
+  try {
+    let logrWkt = wkt;
+    if (terrainGeom) {
+      const buffered = turfBuffer(terrainGeom, 8);
+      logrWkt = geojsonToWKT(buffered) || wkt;
+    }
+    const gj = await fetchWFSByGeom('geoportal:segmento_logradouro', logrWkt, 20);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const vistos = new Set();
+      const linhas = [];
+      feats.forEach(f => {
+        const p = f.properties || {};
+        const key = p.codlog || p.nm_logradouro;
+        if (vistos.has(key)) return;
+        vistos.add(key);
+        linhas.push(`${p.nm_logradouro || '—'} — Codlog: ${p.codlog || '—'}`);
+      });
+      results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: true, resumoLinhas: linhas, imagemDataURL: null });
+    } else {
+      results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: false, resumoLinhas: ['Nenhum logradouro confrontante identificado nesse buffer.'], imagemDataURL: null });
+    }
+  } catch (e) {
+    results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagemDataURL: null });
+  }
+
+  return results;
+}
+
+// Desenha uma página adicional do PDF (A3 paisagem) para um item de
+// camada analisada: título, imagem (mapa ou tabela) quando houver, e
+// texto-resumo. Usa jsPDF puro (sem html2canvas) para ser leve e robusto.
+async function _addCamadaPageToPDF(pdf, item, generatedAt) {
+  pdf.addPage('a3', 'landscape');
+  const pageW = 420, pageH = 297;
+
+  pdf.setFillColor(15, 20, 25);
+  pdf.rect(0, 0, pageW, 18, 'F');
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFontSize(14);
+  pdf.text(item.titulo, 8, 12);
+  pdf.setFontSize(8);
+  pdf.setTextColor(0, 172, 205);
+  pdf.text('Königsberger Vannucchi Arquitetos Associados', pageW - 8, 8, { align: 'right' });
+  pdf.setTextColor(200, 200, 200);
+  pdf.text(`Gerado em: ${generatedAt}`, pageW - 8, 14, { align: 'right' });
+
+  const cursorY = 26;
+  if (item.imagemDataURL) {
+    const imgW = 220, imgH = 160;
+    try { pdf.addImage(item.imagemDataURL, 'JPEG', 8, cursorY, imgW, imgH); } catch (_) {}
+    pdf.setTextColor(20, 20, 20);
+    pdf.setFontSize(10);
+    const tx = 8 + imgW + 10, tw = pageW - tx - 8;
+    let ty = cursorY + 6;
+    (item.resumoLinhas || []).forEach(line => {
+      const wrapped = pdf.splitTextToSize(line, tw);
+      pdf.text(wrapped, tx, ty);
+      ty += wrapped.length * 5 + 3;
+    });
+  } else {
+    pdf.setTextColor(20, 20, 20);
+    pdf.setFontSize(10);
+    let ty = cursorY + 4;
+    (item.resumoLinhas || []).forEach(line => {
+      const wrapped = pdf.splitTextToSize(line, pageW - 16);
+      pdf.text(wrapped, 8, ty);
+      ty += wrapped.length * 5 + 3;
+    });
+  }
+
+  pdf.setDrawColor(220, 220, 220);
+  pdf.line(8, pageH - 10, pageW - 8, pageH - 10);
+  pdf.setFontSize(7.5);
+  pdf.setTextColor(140, 140, 140);
+  pdf.text('Documento informativo — estado do cadastro/legislação na data da análise. Verificar junto à SMUL/GeoSampa.', 8, pageH - 6);
+}
+
 window.exportReportPDF = async function() {
   const params = extractParamsFromDOM();
   if (!params || !params._zone) {
@@ -3000,6 +3330,37 @@ window.exportReportPDF = async function() {
     const pdf = new jsPDF({ orientation:'landscape', unit:'mm', format:'a3' });
     pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 420, 297);
     const filename = `KV_Relatorio_Urbanistico_${zonesInReport.filter(z=>ZONEAMENTO_PARAMS[z]).join('-')||zone}_${new Date().toISOString().slice(0,10)}.pdf`;
+
+    // ── Parte 2: Cadastro e Base Territorial (camadas analisadas) ───────
+    // Reaproveita a geometria/WKT do terreno capturados em _runReport.
+    try {
+      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+      if (terrainWKTForPDF) {
+        log('info', 'Relatório PDF: analisando Cadastro e Base Territorial (Bloco 1)...');
+        const bloco1 = await analisarBloco1Cadastral(terrainGeomForPDF, terrainWKTForPDF);
+
+        // Resumo complementar — sempre exibido, uma página, sem imagem
+        const resumoBloco1 = bloco1.map(it => `${it.titulo}: ${it.temInterferencia ? 'ENCONTRADO — ver página de detalhe' : 'sem incidência'}`);
+        await _addCamadaPageToPDF(pdf, {
+          titulo: 'Resumo Complementar — Cadastro e Base Territorial',
+          resumoLinhas: resumoBloco1,
+          imagemDataURL: null,
+        }, now);
+
+        // Páginas de detalhe — só para camadas com interferência encontrada
+        for (const item of bloco1) {
+          if (!item.temInterferencia) continue;
+          await _addCamadaPageToPDF(pdf, item, now);
+        }
+      } else {
+        log('warn', 'Bloco cadastral do PDF pulado: nenhuma geometria de terreno capturada. Gere o relatório visual novamente antes de exportar.');
+      }
+    } catch (e) {
+      console.error('[PDF][Bloco1]', e);
+      log('warn', `Bloco cadastral do PDF falhou parcialmente: ${e.message}`);
+    }
+
     pdf.save(filename);
 
     tmplEl.remove();
@@ -3021,7 +3382,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V36</span>
+    <span style="color:#00ACCD">V37</span>
   </div>
 </body>
 </html>
