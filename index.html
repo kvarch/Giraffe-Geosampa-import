@@ -3040,9 +3040,179 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
   return results;
 }
 
-// ── Parte 1 do PDF: mesmas informações do relatório visual, em texto ──
-// Lê o próprio #reportContent (mesmo HTML já exibido no painel do app)
-// e desenha o conteúdo como texto/tabelas nativas do jsPDF — nada é
+// ── Bloco 2 — Legislação Urbana e Potencial Construtivo ──────────────
+// Camadas WFS confirmadas: operacao_urbana, subsetor_operacao_urbana,
+// aiu_perimetro_pinheiros, aiu_perimetro_jurubatuba, enquadramento_vila,
+// deliberacao_ctlu, pde_macroarea_lei_18209. Todas com imagem WMS
+// disponível (estilo padrão do servidor), exceto deliberacao_ctlu (não
+// exposta no WMS) e sem 📸 pedida no roteiro original de qualquer forma.
+//
+// Limitações honestas — camadas do roteiro original que NÃO foram
+// encontradas com dado real e por isso ficam de fora desta primeira
+// versão do Bloco 2:
+//  · "Zoneamento Ativado (ZEUP/ZEMP)" — existe só no WMS, sem acesso via
+//    WFS (testado e confirmado: o servidor recusa o typeName no WFS).
+//    Precisaria de GetFeatureInfo (operação WMS) em vez de WFS.
+//  · "Perímetros AIU" além de Pinheiros/Jurubatuba (ex: Setor Central,
+//    Vila Leopoldina) — não encontrei camada WFS própria para eles.
+//  · "Macrozona" — só achei a camada de Macroárea; Macrozona (PDE Lei
+//    16.050) não foi localizada como camada própria.
+//  · "Qualificação Ambiental" e "Perímetro das Zonas" — já calculados por
+//    outro caminho na Parte 1 (relatório visual); não duplicados aqui.
+//  · "Mapas PDE (Transporte)", "Verticalização da Quadra" e "Isenção de
+//    Recuo Frontal" — exigem camada ainda não identificada ou cálculo
+//    geométrico customizado fora do escopo desta etapa.
+async function analisarBloco2Legislacao(terrainGeom, wkt) {
+  const results = [];
+
+  // 1) Operação Urbana + Subsetor
+  try {
+    const gj = await fetchWFSByGeom('geoportal:operacao_urbana', wkt, 5);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      let gjSub = null;
+      try { gjSub = await fetchWFSByGeom('geoportal:subsetor_operacao_urbana', wkt, 5); } catch (_) {}
+      const subFeats = gjSub?.features || [];
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        const influenciaFariaLima = (p.nm_operacao_urbana || '').toLowerCase().includes('faria lima') || (p.sg_operacao_urbana || '').toLowerCase().includes('fl');
+        return `${p.nm_operacao_urbana || '—'} (${p.sg_operacao_urbana || '—'}) — Lei: ${p.tx_lei_operacao_urbana || '—'}${influenciaFariaLima ? ' — ⚠ ÁREA DE INFLUÊNCIA OUC FARIA LIMA' : ''}`;
+      });
+      subFeats.forEach(f => {
+        const p = f.properties || {};
+        linhas.push(`Subsetor: ${p.nm_subsetor_operacao_urbana || '—'} (Setor ${p.nm_setor_operacao_urbana || '—'}) — Lei: ${p.tx_lei_subsetor || '—'}`);
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'operacao_urbana'],
+          styles: [null, null],
+          marginMeters: 200, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Operação Urbana] falha ao gerar imagem:', e);
+        log('warn', `Operação Urbana: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana', temInterferencia: false, resumoLinhas: ['Terreno fora de perímetro de Operação Urbana.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 2) Perímetros AIU (Pinheiros e Jurubatuba — únicas camadas confirmadas)
+  try {
+    const [gjPin, gjJur] = await Promise.all([
+      fetchWFSByGeom('geoportal:aiu_perimetro_pinheiros', wkt, 5).catch(() => null),
+      fetchWFSByGeom('geoportal:aiu_perimetro_jurubatuba', wkt, 5).catch(() => null),
+    ]);
+    const featsPin = gjPin?.features || [];
+    const featsJur = gjJur?.features || [];
+    if (featsPin.length > 0 || featsJur.length > 0) {
+      const linhas = [
+        ...featsPin.map(f => { const p = f.properties || {}; return `AIU ${p.nm_aiu || 'Pinheiros'} — ${p.tx_classificacao_perimetro || '—'} — Lei ${p.cd_numero_lei || '—'} (${p.nm_lei || '—'})`; }),
+        ...featsJur.map(f => { const p = f.properties || {}; return `AIU ${p.nm_aiu || 'Jurubatuba'} — ${p.tx_classificacao_perimetro || '—'} — Lei ${p.cd_numero_lei || '—'} (${p.nm_lei || '—'})`; }),
+      ];
+      const layerName = featsPin.length > 0 ? 'aiu_perimetro_pinheiros' : 'aiu_perimetro_jurubatuba';
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', layerName],
+          styles: [null, null],
+          marginMeters: 200, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Perímetros AIU] falha ao gerar imagem:', e);
+        log('warn', `Perímetros AIU: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'aiu', titulo: 'Legislação — Perímetro AIU', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'aiu', titulo: 'Legislação — Perímetro AIU', temInterferencia: false, resumoLinhas: ['Terreno fora dos perímetros AIU Pinheiros/Jurubatuba (únicos com camada própria confirmada).'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'aiu', titulo: 'Legislação — Perímetro AIU', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 3) Enquadramento como Vila
+  try {
+    const gj = await fetchWFSByGeom('geoportal:enquadramento_vila', wkt, 5);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `Enquadramento: ${p.tx_indicador_enquadramento_vila || '—'} — Despacho DO: ${p.dt_despacho_diario_oficial || '—'}`;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'enquadramento_vila'],
+          styles: [null, null],
+          marginMeters: 150, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Enquadramento Vila] falha ao gerar imagem:', e);
+        log('warn', `Enquadramento Vila: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'vila', titulo: 'Legislação — Enquadramento como Vila', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'vila', titulo: 'Legislação — Enquadramento como Vila', temInterferencia: false, resumoLinhas: ['Sem enquadramento como vila/rua sem saída.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'vila', titulo: 'Legislação — Enquadramento como Vila', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 4) Deliberações CTLU (sem camada WMS — só texto, conforme roteiro original)
+  try {
+    const gj = await fetchWFSByGeom('geoportal:deliberacao_ctlu', wkt, 10);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `Deliberação CTLU — ${p.tx_resumo_tema || 'sem resumo'} — ${p.dt_legislacao || '—'} — Responsável: ${p.nm_responsavel_deliberacao || '—'}${p.tx_link ? ` — Link: ${p.tx_link}` : ''}`;
+      });
+      results.push({ id: 'ctlu', titulo: 'Legislação — Deliberações CTLU', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+    } else {
+      results.push({ id: 'ctlu', titulo: 'Legislação — Deliberações CTLU', temInterferencia: false, resumoLinhas: ['Nenhuma deliberação CTLU incidente.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'ctlu', titulo: 'Legislação — Deliberações CTLU', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 5) Macroárea (PDE Lei 18.209) — Macrozona não localizada como camada própria
+  try {
+    const gj = await fetchWFSByGeom('geoportal:pde_macroarea_lei_18209', wkt, 5);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `Macroárea: ${p.nm_macroarea || '—'} (${p.sg_macroarea || '—'})`;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'pde_macroarea_lei_18209'],
+          styles: [null, null],
+          marginMeters: 400, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Macroárea] falha ao gerar imagem:', e);
+        log('warn', `Macroárea: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: false, resumoLinhas: ['Macroárea não identificada.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  return results;
+}
 // recalculado aqui, só lido e formatado. Fundo claro, sem screenshot.
 
 // pdf.splitTextToSize só quebra em espaços. Textos densos (ex: dados de
@@ -3295,10 +3465,12 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
   drawPageHeader();
 
   items.forEach(item => {
-    const titleH = 7;
+    pdf.setFontSize(11);
+    const wrappedTitle = _safeWrap(pdf, item.titulo, contentW);
+    const titleH = wrappedTitle.length * 5;
     const imgHmm = item.imagem ? contentW / (item.imagem.width / item.imagem.height) : 0;
     const linhas = item.resumoLinhas || [];
-    // Estimativa de altura do texto (jsPDF quebra depois com splitTextToSize real)
+    // Estimativa de altura do texto (jsPDF quebra depois com _safeWrap real)
     const estTextH = linhas.reduce((acc, l) => acc + Math.ceil(l.length / 95) * 4.6, 0) + 4;
     const estTableH = item.tabela ? 6.5 + Math.min(item.tabela.rows.length, 6) * 5.6 : 0;
     const totalCardH = titleH + imgHmm + estTextH + estTableH + 8;
@@ -3309,7 +3481,7 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
 
     pdf.setFont(undefined, 'bold');
     pdf.setFontSize(11); pdf.setTextColor(15, 20, 25);
-    pdf.text(item.titulo, marginX, cursorY + 4);
+    pdf.text(wrappedTitle, marginX, cursorY + 4);
     pdf.setFont(undefined, 'normal');
     cursorY += titleH + 2;
 
@@ -3393,6 +3565,31 @@ window.exportReportPDF = async function() {
       log('warn', `Bloco cadastral do PDF falhou parcialmente: ${e.message}`);
     }
 
+    // ── PARTE 3 — Legislação Urbana e Potencial Construtivo (Bloco 2,
+    // páginas próprias) ───────────────────────────────────────────────
+    try {
+      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+
+      if (terrainWKTForPDF) {
+        log('info', 'Relatório PDF: analisando Legislação Urbana (Bloco 2)...');
+        const bloco2 = await analisarBloco2Legislacao(terrainGeomForPDF, terrainWKTForPDF);
+
+        const resumoCard2 = {
+          titulo: 'Resumo Complementar — Legislação Urbana e Potencial Construtivo',
+          resumoLinhas: bloco2.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+          imagem: null,
+        };
+        const cardsParaExibir2 = [resumoCard2, ...bloco2.filter(it => it.temInterferencia)];
+
+        pdf.addPage('a4', 'portrait');
+        _addBloco1CardsToPDF(pdf, cardsParaExibir2, now);
+      }
+    } catch (e) {
+      console.error('[PDF][Bloco2]', e);
+      log('warn', `Bloco de legislação urbana do PDF falhou parcialmente: ${e.message}`);
+    }
+
     pdf.save(filename);
     log('ok', `PDF exportado: ${filename}`);
 
@@ -3412,7 +3609,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V41</span>
+    <span style="color:#00ACCD">V42</span>
   </div>
 </body>
 </html>
