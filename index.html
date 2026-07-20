@@ -2827,7 +2827,7 @@ async function renderCompositeMapImage(opts) {
     // renderiza com rótulos em escalas bem próximas — ~1:5000):
     // ajusta a margem para que a largura do bbox não ultrapasse o
     // permitido nessa resolução de imagem.
-    const maxWidthMeters = maxScaleDenominator * 0.00028 * widthPx * 0.7; // 30% de folga
+    const maxWidthMeters = maxScaleDenominator * 0.00028 * widthPx * 0.9; // 10% de folga
     const terrainWidthMeters = (terrainBboxRaw.maxX - terrainBboxRaw.minX) * 111320 * Math.cos(23.5 * Math.PI / 180);
     const allowedMargin = Math.max(10, (maxWidthMeters - terrainWidthMeters) / 2);
     margin = Math.min(margin, allowedMargin);
@@ -2895,9 +2895,12 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
           layers: ['MapaBase_Topografico', 'lote_cidadao'],
           styles: [null, 'polygon.Lote.CamadaLabel'],
           maxScaleDenominator: 5001,
-          marginMeters: 25, widthPx: 1400, heightPx: 1050,
+          marginMeters: 40, widthPx: 1000, heightPx: 750,
         });
-      } catch (_) {}
+      } catch (e) {
+        console.error('[PDF][Setor/Quadra] falha ao gerar imagem:', e);
+        log('warn', `Setor/Quadra: imagem WMS falhou — ${e.message}`);
+      }
       results.push({ id: 'setor_quadra', titulo: 'Cadastro — Setor e Quadra Fiscal', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
       results.push({ id: 'setor_quadra', titulo: 'Cadastro — Setor e Quadra Fiscal', temInterferencia: false, resumoLinhas: ['Não foi possível identificar Setor/Quadra para este terreno.'], imagem: null });
@@ -2953,7 +2956,10 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
           styles: [null, 'multipolygon.GEOPATRI.AreaCedida.Cidadao.CamadaLabel'],
           marginMeters: 150, widthPx: 1000, heightPx: 750,
         });
-      } catch (_) {}
+      } catch (e) {
+        console.error('[PDF][Área Cedida] falha ao gerar imagem:', e);
+        log('warn', `Área Cedida: imagem WMS falhou — ${e.message}`);
+      }
       results.push({ id: 'area_cedida', titulo: 'Cadastro — Área Cedida (interferência)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
       results.push({ id: 'area_cedida', titulo: 'Cadastro — Área Cedida', temInterferencia: false, resumoLinhas: ['Sem interferência com áreas cedidas.'], imagem: null });
@@ -2979,7 +2985,10 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
           styles: [null, 'multipolygon.CadastroAreaPublica.CamadaLabel'],
           marginMeters: 150, widthPx: 1000, heightPx: 750,
         });
-      } catch (_) {}
+      } catch (e) {
+        console.error('[PDF][CAP] falha ao gerar imagem:', e);
+        log('warn', `CAP: imagem WMS falhou — ${e.message}`);
+      }
       results.push({ id: 'cap', titulo: '⚠ Cadastro de Área Pública (CAP) — invasão/limite', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
       results.push({ id: 'cap', titulo: 'Cadastro de Área Pública (CAP)', temInterferencia: false, resumoLinhas: ['Sem invasão ou limite direto com CAP.'], imagem: null });
@@ -3016,7 +3025,10 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
           styles: [null, 'line.Logradouro.CamadaLabel'],
           marginMeters: 100, widthPx: 1000, heightPx: 750,
         });
-      } catch (_) {}
+      } catch (e) {
+        console.error('[PDF][Logradouro] falha ao gerar imagem:', e);
+        log('warn', `Logradouro: imagem WMS falhou — ${e.message}`);
+      }
       results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
       results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: false, resumoLinhas: ['Nenhum logradouro confrontante identificado nesse buffer.'], imagem: null });
@@ -3074,22 +3086,31 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
     const colW = contentW / colCount;
     const rowH = 5.6;
     rows.forEach((r, ri) => {
-      ensureSpace(rowH);
-      pdf.setFillColor(ri % 2 === 0 ? 246 : 255, ri % 2 === 0 ? 248 : 255, ri % 2 === 0 ? 249 : 255);
-      pdf.rect(marginX, cursorY, contentW, rowH, 'F');
-      pdf.setFontSize(8.6); pdf.setTextColor(40, 40, 40);
       if (r.length < colCount) {
-        // linha corrida (ex: cabeçalho de grupo com colspan na versão visual)
+        // linha corrida (ex: cabeçalho de grupo ou observação com colspan
+        // na versão visual) — quebra texto para não ultrapassar a margem
+        pdf.setFontSize(8.6);
+        const wrapped = pdf.splitTextToSize(r.join(' — '), contentW - 4);
+        const thisRowH = Math.max(rowH, wrapped.length * 4.2 + 1.6);
+        ensureSpace(thisRowH);
+        pdf.setFillColor(ri % 2 === 0 ? 246 : 255, ri % 2 === 0 ? 248 : 255, ri % 2 === 0 ? 249 : 255);
+        pdf.rect(marginX, cursorY, contentW, thisRowH, 'F');
+        pdf.setTextColor(40, 40, 40);
         pdf.setFont(undefined, 'bold');
-        pdf.text(r.join(' — '), marginX + 2, cursorY + rowH / 2 + 1.4);
+        pdf.text(wrapped, marginX + 2, cursorY + 4);
         pdf.setFont(undefined, 'normal');
+        cursorY += thisRowH;
       } else {
+        ensureSpace(rowH);
+        pdf.setFillColor(ri % 2 === 0 ? 246 : 255, ri % 2 === 0 ? 248 : 255, ri % 2 === 0 ? 249 : 255);
+        pdf.rect(marginX, cursorY, contentW, rowH, 'F');
+        pdf.setFontSize(8.6); pdf.setTextColor(40, 40, 40);
         r.forEach((cell, ci) => {
           const wrapped = pdf.splitTextToSize(cell, colW - 3);
           pdf.text(wrapped[0] || '', marginX + ci * colW + 2, cursorY + rowH / 2 + 1.4);
         });
+        cursorY += rowH;
       }
-      cursorY += rowH;
     });
     cursorY += 3;
   }
@@ -3113,18 +3134,19 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
       const tags = block.querySelectorAll('.report-eixo-tag, .report-ou-tag');
       ensureSpace(16);
       pdf.setFontSize(13); pdf.setFont(undefined, 'bold'); pdf.setTextColor(20, 20, 20);
-      pdf.text((pill ? pill.textContent.trim() : 'Terreno'), marginX, cursorY + 5);
+      cursorY += _drawWrappedText(pdf, (pill ? pill.textContent.trim() : 'Terreno'), marginX, cursorY + 5, contentW, 5.5);
       pdf.setFont(undefined, 'normal');
-      cursorY += 8;
+      cursorY += 3;
       if (lei) {
         pdf.setFontSize(8.5); pdf.setTextColor(100, 100, 100);
         cursorY += _drawWrappedText(pdf, lei.textContent.trim(), marginX, cursorY, contentW, 4);
       }
       tags.forEach(t => {
-        ensureSpace(5);
         pdf.setFontSize(8.5); pdf.setTextColor(0, 130, 160);
-        pdf.text(t.textContent.trim(), marginX, cursorY + 3);
-        cursorY += 5;
+        const wrapped = pdf.splitTextToSize(t.textContent.trim(), contentW);
+        ensureSpace(wrapped.length * 4);
+        pdf.text(wrapped, marginX, cursorY + 3);
+        cursorY += wrapped.length * 4 + 1;
       });
       cursorY += 3;
       continue;
@@ -3248,7 +3270,7 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
     const estTableH = item.tabela ? 6.5 + Math.min(item.tabela.rows.length, 6) * 5.6 : 0;
     const totalCardH = titleH + imgHmm + estTextH + estTableH + 8;
 
-    if (cursorY + Math.min(totalCardH, 60) > pageH - marginBottom && cursorY > 20) {
+    if (cursorY + totalCardH > pageH - marginBottom && cursorY > 20) {
       newPageForCards();
     }
 
@@ -3357,7 +3379,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V39</span>
+    <span style="color:#00ACCD">V40</span>
   </div>
 </body>
 </html>
