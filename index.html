@@ -2782,6 +2782,30 @@ function loadImageCORS(url) {
   });
 }
 
+// Algumas camadas do GeoSampa (ex: zoneamento_2016_zeup_zemp) existem só no
+// WMS — o servidor recusa o typeName no WFS. Para essas, a única forma de
+// ler atributos é via GetFeatureInfo (operação WMS) num ponto específico.
+// Monta uma janela pequena centrada no ponto e consulta o pixel central.
+async function fetchWMSFeatureInfo(layerName, lng, lat, opts = {}) {
+  const { bufferMeters = 15, width = 101, height = 101 } = opts;
+  const bboxWGS = expandBBOX({ minX: lng, minY: lat, maxX: lng, maxY: lat }, bufferMeters);
+  const [minX, minY] = lonLatToWebMercator(bboxWGS.minX, bboxWGS.minY);
+  const [maxX, maxY] = lonLatToWebMercator(bboxWGS.maxX, bboxWGS.maxY);
+  const x = Math.round(width / 2), y = Math.round(height / 2);
+  const url = `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetFeatureInfo`
+    + `&layers=${encodeURIComponent(layerName)}&query_layers=${encodeURIComponent(layerName)}`
+    + `&srs=EPSG:3857&bbox=${minX},${minY},${maxX},${maxY}&width=${width}&height=${height}`
+    + `&x=${x}&y=${y}&info_format=application/json&feature_count=5`;
+  const proxied = buildProxiedWMS(url);
+  const res = await fetch(proxied, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); }
+  catch (_) { throw new Error('Resposta não é JSON — camada pode não suportar GetFeatureInfo'); }
+  return json?.features || [];
+}
+
 // Usado só para destacar o terreno (contorno vermelho) por cima do que
 // o WMS já desenhou — não redesenhamos mais as camadas analisadas.
 function _drawGeomOnCanvas(ctx, geometry, bbox3857, w, h, style) {
@@ -2816,6 +2840,7 @@ async function renderCompositeMapImage(opts) {
     widthPx = 900,
     heightPx = 650,
     maxScaleDenominator = null,
+    extraOverlays = [], // [{ geometry, style:{stroke,fill,fillOpacity,lineWidth} }] — desenhados antes do destaque do terreno
   } = opts;
   if (!terrainGeom) return null;
 
@@ -2858,6 +2883,8 @@ async function renderCompositeMapImage(opts) {
     ctx.fillStyle = '#888'; ctx.font = '16px sans-serif';
     ctx.fillText('Fundo WMS indisponível no momento da geração', 20, 30);
   }
+
+  extraOverlays.forEach(ov => _drawGeomOnCanvas(ctx, ov.geometry, bbox3857, widthPx, heightPx, ov.style));
 
   _drawGeomOnCanvas(ctx, terrainGeom, bbox3857, widthPx, heightPx,
     { stroke: '#ff3b30', fill: '#ff3b30', fillOpacity: 0.1, lineWidth: 3 });
@@ -3040,32 +3067,212 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
   return results;
 }
 
-// ── Bloco 2 — Legislação Urbana e Potencial Construtivo ──────────────
-// Camadas WFS confirmadas: operacao_urbana, subsetor_operacao_urbana,
-// aiu_perimetro_pinheiros, aiu_perimetro_jurubatuba, enquadramento_vila,
-// deliberacao_ctlu, pde_macroarea_lei_18209. Todas com imagem WMS
-// disponível (estilo padrão do servidor), exceto deliberacao_ctlu (não
-// exposta no WMS) e sem 📸 pedida no roteiro original de qualquer forma.
+// ── Bloco 2 — Legislação Urbana, Eixos e Potencial Construtivo ───────
+// Réplica em texto + imagem de itens que já existem na Parte 1 (Perímetro
+// das Zonas, Qualificação Ambiental) — o usuário pediu duplicação
+// intencional aqui, com print. Camadas WFS confirmadas nesta versão:
+// operacao_urbana, subsetor_operacao_urbana, zoneamento_2016_map1,
+// pde_transporte_linha, aiu_perimetro_pinheiros, aiu_perimetro_jurubatuba,
+// enquadramento_vila, deliberacao_ctlu, pde_macroarea_lei_18209,
+// quadra_fiscal, edificacao. "Zoneamento Ativado" usa GetFeatureInfo (WMS)
+// porque não existe no WFS (testado e confirmado: servidor recusa o
+// typeName). Qualificação Ambiental reaproveita a mesma grade estática
+// (Mapa 3 / Quadro 3A, `getQualificacaoAmbiental`) já usada na Parte 1 —
+// não há camada WMS dedicada para essa grade, então a imagem é só de
+// contexto (mapa base + terreno destacado).
 //
-// Limitações honestas — camadas do roteiro original que NÃO foram
-// encontradas com dado real e por isso ficam de fora desta primeira
-// versão do Bloco 2:
-//  · "Zoneamento Ativado (ZEUP/ZEMP)" — existe só no WMS, sem acesso via
-//    WFS (testado e confirmado: o servidor recusa o typeName no WFS).
-//    Precisaria de GetFeatureInfo (operação WMS) em vez de WFS.
+// Limitações honestas — não implementadas nesta versão:
 //  · "Perímetros AIU" além de Pinheiros/Jurubatuba (ex: Setor Central,
 //    Vila Leopoldina) — não encontrei camada WFS própria para eles.
 //  · "Macrozona" — só achei a camada de Macroárea; Macrozona (PDE Lei
 //    16.050) não foi localizada como camada própria.
-//  · "Qualificação Ambiental" e "Perímetro das Zonas" — já calculados por
-//    outro caminho na Parte 1 (relatório visual); não duplicados aqui.
-//  · "Mapas PDE (Transporte)", "Verticalização da Quadra" e "Isenção de
-//    Recuo Frontal" — exigem camada ainda não identificada ou cálculo
-//    geométrico customizado fora do escopo desta etapa.
+//  · "Isenção de Recuo Frontal" — exigiria cruzar a testada exata do lote
+//    com as projeções de edificação e medir % de ocupação no alinhamento;
+//    não tenho uma forma confiável de extrair a testada como segmento
+//    isolado a partir dos dados disponíveis. Fica de fora até confirmar
+//    uma abordagem geométrica sólida.
+//  · O buffer da "Vila" e o buffer das linhas de PDE Transporte são
+//    RAIOS DE VISUALIZAÇÃO definidos pelo app para dar contexto no mapa —
+//    não são parâmetros legais oficiais. Isso é dito explicitamente no
+//    texto do relatório.
 async function analisarBloco2Legislacao(terrainGeom, wkt) {
   const results = [];
+  let zonaCodigoDetectado = null; // reaproveitado depois no item "Verticalização da Quadra"
 
-  // 1) Operação Urbana + Subsetor
+  // 1) Mapas PDE (Transporte) — linhas de ação prioritária (Metrô/Trem/Ônibus)
+  try {
+    let bufferedWkt = wkt;
+    if (terrainGeom) {
+      const buffered = turfBuffer(terrainGeom, 300); // raio de visualização do app — não é parâmetro legal
+      bufferedWkt = geojsonToWKT(buffered) || wkt;
+    }
+    const gj = await fetchWFSByGeom('geoportal:pde_transporte_linha', bufferedWkt, 20);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = [
+        'Buffer de 300m ao redor do terreno (raio de visualização do app, não é parâmetro legal oficial).',
+        ...feats.map(f => { const p = f.properties || {}; return `${p.nm_linha || '—'} (${p.tx_tipo_modal || '—'}) — situação: ${p.tx_tipo_situacao_projeto || '—'}`; }),
+      ];
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'pde_transporte_linha'],
+          styles: [null, null],
+          marginMeters: 350, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][PDE Transporte] falha ao gerar imagem:', e);
+        log('warn', `PDE Transporte: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte)', temInterferencia: false, resumoLinhas: ['Nenhuma linha de ação prioritária de transporte num raio de 300m do terreno.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'pde_transporte', titulo: 'Legislação — Mapas PDE (Transporte)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 2) Perímetro das Zonas — réplica com imagem (já existe em texto na Parte 1)
+  try {
+    const gj = await fetchWFSByGeom('geoportal:zoneamento_2016_map1', wkt, 10);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      zonaCodigoDetectado = feats[0]?.properties?.cd_zoneamento_perimetro || null;
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `Zona ${p.cd_zoneamento_perimetro || '—'} — ${p.tx_zoneamento_perimetro || '—'} (Lei ${p.cd_numero_legislacao_zoneamento || '—'}/${p.an_legislacao_zoneamento || '—'})`;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'zoneamento_2016_map1'],
+          styles: [null, null],
+          marginMeters: 150, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Perímetro das Zonas] falha ao gerar imagem:', e);
+        log('warn', `Perímetro das Zonas: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'perimetro_zonas', titulo: 'Legislação — Perímetro das Zonas', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'perimetro_zonas', titulo: 'Legislação — Perímetro das Zonas', temInterferencia: false, resumoLinhas: ['Zona de uso não identificada.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'perimetro_zonas', titulo: 'Legislação — Perímetro das Zonas', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 3) Zoneamento Ativado (ZEUP ou ZEMP) — só existe no WMS, via GetFeatureInfo
+  try {
+    let centroid = null;
+    if (terrainGeom && typeof turf !== 'undefined') {
+      const c = turf.centroid({ type: 'Feature', geometry: terrainGeom, properties: {} });
+      centroid = c.geometry.coordinates;
+    }
+    if (centroid) {
+      const feats = await fetchWMSFeatureInfo('zoneamento_2016_zeup_zemp', centroid[0], centroid[1]);
+      if (feats.length > 0) {
+        const linhas = ['Status: ATIVADO', ...feats.map(f => {
+          const p = f.properties || {};
+          const pares = Object.entries(p).filter(([k, v]) => v != null && v !== '');
+          return pares.map(([k, v]) => `${k}: ${v}`).join(' · ') || '(sem atributos retornados)';
+        })];
+        let img = null;
+        try {
+          img = await renderCompositeMapImage({
+            terrainGeom,
+            layers: ['MapaBase_Topografico', 'zoneamento_2016_zeup_zemp'],
+            styles: [null, null],
+            marginMeters: 150, widthPx: 1000, heightPx: 750,
+          });
+        } catch (e) {
+          console.error('[PDF][ZEUP/ZEMP] falha ao gerar imagem:', e);
+          log('warn', `Zoneamento Ativado: imagem WMS falhou — ${e.message}`);
+        }
+        results.push({ id: 'zeup_zemp', titulo: 'Legislação — Zoneamento Ativado (ZEUP/ZEMP)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+      } else {
+        results.push({ id: 'zeup_zemp', titulo: 'Legislação — Zoneamento Ativado (ZEUP/ZEMP)', temInterferencia: false, resumoLinhas: ['Status: Não Ativado (sem feição ZEUP/ZEMP no ponto central do terreno).'], imagem: null });
+      }
+    } else {
+      results.push({ id: 'zeup_zemp', titulo: 'Legislação — Zoneamento Ativado (ZEUP/ZEMP)', temInterferencia: false, resumoLinhas: ['Não foi possível calcular o centróide do terreno.'], imagem: null });
+    }
+  } catch (e) {
+    console.error('[PDF][ZEUP/ZEMP]', e);
+    results.push({ id: 'zeup_zemp', titulo: 'Legislação — Zoneamento Ativado (ZEUP/ZEMP)', temInterferencia: false, resumoLinhas: [`Erro na consulta (GetFeatureInfo): ${e.message}`], imagem: null });
+  }
+
+  // 4) Macrozona e Macroárea (Macrozona não localizada como camada própria)
+  try {
+    const gj = await fetchWFSByGeom('geoportal:pde_macroarea_lei_18209', wkt, 5);
+    const feats = gj?.features || [];
+    if (feats.length > 0) {
+      const linhas = [
+        ...feats.map(f => { const p = f.properties || {}; return `Macroárea: ${p.nm_macroarea || '—'} (${p.sg_macroarea || '—'})`; }),
+        'Macrozona: não encontrei camada própria no GeoSampa para esse dado (PDE Lei 16.050) — confirmar manualmente se necessário.',
+      ];
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'pde_macroarea_lei_18209'],
+          styles: [null, null],
+          marginMeters: 400, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Macroárea] falha ao gerar imagem:', e);
+        log('warn', `Macroárea: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'macroarea', titulo: 'Legislação — Macrozona e Macroárea (PDE)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'macroarea', titulo: 'Legislação — Macrozona e Macroárea (PDE)', temInterferencia: false, resumoLinhas: ['Macroárea não identificada.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'macroarea', titulo: 'Legislação — Macrozona e Macroárea (PDE)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 5) Qualificação Ambiental — réplica com imagem (já em texto na Parte 1)
+  try {
+    let centroid = null, qaTerreno = null, atArea = null;
+    if (terrainGeom && typeof turf !== 'undefined') {
+      const c = turf.centroid({ type: 'Feature', geometry: terrainGeom, properties: {} });
+      centroid = c.geometry.coordinates;
+      qaTerreno = getQualificacaoAmbiental(centroid[0], centroid[1]);
+      atArea = Math.round(turf.area({ type: 'Feature', geometry: terrainGeom, properties: {} }));
+    }
+    if (qaTerreno) {
+      const q3a = QUADRO_3A[qaTerreno];
+      const qaObrig = atArea ? atArea > 500 : null;
+      const qaMin = q3a && atArea ? getQAMin(qaTerreno, atArea) : null;
+      const tp = q3a ? (atArea && atArea <= 500 ? q3a.tp_lte500 : q3a.tp_gt500) : null;
+      const linhas = [
+        `Perímetro de Qualificação Ambiental: ${qaTerreno} (Mapa 3 · Lei 16.402/16 — grade 200m, dado fixo de 2016)`,
+        tp != null ? `Taxa de Permeabilidade Mínima: ${(tp * 100).toFixed(0)}%` : 'Taxa de Permeabilidade: — (PA não catalogado no Quadro 3A)',
+        qaObrig && qaMin != null
+          ? `Quota (Pontuação) Ambiental Mínima: ${qaMin.toFixed(2)} — lote ${atArea.toLocaleString('pt-BR')}m²`
+          : (atArea && atArea <= 500 ? 'Quota Ambiental: isenta (lote ≤500m² — Art.76 §2)' : 'Quota Ambiental: —'),
+      ];
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico'],
+          styles: [null],
+          marginMeters: 150, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][Qualificação Ambiental] falha ao gerar imagem:', e);
+        log('warn', `Qualificação Ambiental: imagem falhou — ${e.message}`);
+      }
+      results.push({ id: 'qa', titulo: 'Legislação — Qualificação Ambiental (Mapa 3 / Quadro 3A)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'qa', titulo: 'Legislação — Qualificação Ambiental (Mapa 3 / Quadro 3A)', temInterferencia: false, resumoLinhas: ['PA não identificado para este terreno (grade estática GeoSampa Mapa 3, 2016 — sem camada WMS dedicada; confirmar manualmente se necessário).'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'qa', titulo: 'Legislação — Qualificação Ambiental (Mapa 3 / Quadro 3A)', temInterferencia: false, resumoLinhas: [`Erro no cálculo: ${e.message}`], imagem: null });
+  }
+
+  // 6) Operação Urbana — imagem agora combina perímetro + subsetores
   try {
     const gj = await fetchWFSByGeom('geoportal:operacao_urbana', wkt, 5);
     const feats = gj?.features || [];
@@ -3086,23 +3293,23 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
       try {
         img = await renderCompositeMapImage({
           terrainGeom,
-          layers: ['MapaBase_Topografico', 'operacao_urbana'],
-          styles: [null, null],
+          layers: ['MapaBase_Topografico', 'operacao_urbana', 'subsetor_operacao_urbana'],
+          styles: [null, null, null],
           marginMeters: 200, widthPx: 1000, heightPx: 750,
         });
       } catch (e) {
         console.error('[PDF][Operação Urbana] falha ao gerar imagem:', e);
         log('warn', `Operação Urbana: imagem WMS falhou — ${e.message}`);
       }
-      results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+      results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana, Subsetores e Faria Lima', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
-      results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana', temInterferencia: false, resumoLinhas: ['Terreno fora de perímetro de Operação Urbana.'], imagem: null });
+      results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana, Subsetores e Faria Lima', temInterferencia: false, resumoLinhas: ['Terreno fora de perímetro de Operação Urbana.'], imagem: null });
     }
   } catch (e) {
-    results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+    results.push({ id: 'operacao_urbana', titulo: 'Legislação — Operação Urbana, Subsetores e Faria Lima', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
-  // 2) Perímetros AIU (Pinheiros e Jurubatuba — únicas camadas confirmadas)
+  // 7) Perímetros AIU (Pinheiros e Jurubatuba — únicas camadas confirmadas)
   try {
     const [gjPin, gjJur] = await Promise.all([
       fetchWFSByGeom('geoportal:aiu_perimetro_pinheiros', wkt, 5).catch(() => null),
@@ -3136,7 +3343,7 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
     results.push({ id: 'aiu', titulo: 'Legislação — Perímetro AIU', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
-  // 3) Enquadramento como Vila
+  // 8) Enquadramento como Vila — agora com buffer de visualização ao redor da vila
   try {
     const gj = await fetchWFSByGeom('geoportal:enquadramento_vila', wkt, 5);
     const feats = gj?.features || [];
@@ -3145,13 +3352,16 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
         const p = f.properties || {};
         return `Enquadramento: ${p.tx_indicador_enquadramento_vila || '—'} — Despacho DO: ${p.dt_despacho_diario_oficial || '—'}`;
       });
+      linhas.push('Área tracejada no mapa: raio de visualização de 30m ao redor da vila (definido pelo app só para dar contexto — não é um parâmetro legal oficial).');
       let img = null;
       try {
+        const vilaBuffer = turfBuffer(feats[0].geometry, 30);
         img = await renderCompositeMapImage({
           terrainGeom,
           layers: ['MapaBase_Topografico', 'enquadramento_vila'],
           styles: [null, null],
           marginMeters: 150, widthPx: 1000, heightPx: 750,
+          extraOverlays: [{ geometry: vilaBuffer, style: { stroke: '#ff9500', fill: null, lineWidth: 2 } }],
         });
       } catch (e) {
         console.error('[PDF][Enquadramento Vila] falha ao gerar imagem:', e);
@@ -3165,7 +3375,7 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
     results.push({ id: 'vila', titulo: 'Legislação — Enquadramento como Vila', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
-  // 4) Deliberações CTLU (sem camada WMS — só texto, conforme roteiro original)
+  // 9) Deliberações CTLU (sem camada WMS — só texto, conforme roteiro original)
   try {
     const gj = await fetchWFSByGeom('geoportal:deliberacao_ctlu', wkt, 10);
     const feats = gj?.features || [];
@@ -3182,38 +3392,52 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
     results.push({ id: 'ctlu', titulo: 'Legislação — Deliberações CTLU', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
-  // 5) Macroárea (PDE Lei 18.209) — Macrozona não localizada como camada própria
+  // 10) Verticalização da Quadra — soma alturas de edificação (edificacao)
+  // na quadra e compara com o gabarito da zona detectada no item 2.
   try {
-    const gj = await fetchWFSByGeom('geoportal:pde_macroarea_lei_18209', wkt, 5);
-    const feats = gj?.features || [];
-    if (feats.length > 0) {
-      const linhas = feats.map(f => {
-        const p = f.properties || {};
-        return `Macroárea: ${p.nm_macroarea || '—'} (${p.sg_macroarea || '—'})`;
-      });
-      let img = null;
-      try {
-        img = await renderCompositeMapImage({
-          terrainGeom,
-          layers: ['MapaBase_Topografico', 'pde_macroarea_lei_18209'],
-          styles: [null, null],
-          marginMeters: 400, widthPx: 1000, heightPx: 750,
-        });
-      } catch (e) {
-        console.error('[PDF][Macroárea] falha ao gerar imagem:', e);
-        log('warn', `Macroárea: imagem WMS falhou — ${e.message}`);
+    const gjQuadra = await fetchWFSByGeom('geoportal:quadra_fiscal', wkt, 5);
+    const quadraFeats = gjQuadra?.features || [];
+    if (quadraFeats.length > 0) {
+      const quadraGeom = quadraFeats[0].geometry;
+      const quadraWkt = geojsonToWKT(quadraGeom);
+      const gjEdif = quadraWkt ? await fetchWFSByGeom('geoportal:edificacao', quadraWkt, 300).catch(() => null) : null;
+      const edifFeats = gjEdif?.features || [];
+      const alturas = edifFeats
+        .map(f => parseFloat(f.properties?.qt_altura_edificacao))
+        .filter(v => !isNaN(v) && v > 0);
+
+      const params = zonaCodigoDetectado ? ZONEAMENTO_PARAMS[zonaCodigoDetectado] : null;
+      const gabaritoStr = params?.gabarito || null;
+      const gabaritoNum = gabaritoStr ? parseFloat(String(gabaritoStr).replace(',', '.').match(/[\d.]+/)?.[0]) : null;
+      const semLimite = gabaritoStr && /livre/i.test(gabaritoStr);
+
+      if (alturas.length > 0) {
+        const linhas = [];
+        if (semLimite) {
+          linhas.push(`Gabarito da zona ${zonaCodigoDetectado}: Livre (sem limite) — não há o que comparar.`);
+        } else if (gabaritoNum) {
+          const excedem = alturas.filter(h => h > gabaritoNum);
+          const pct = Math.round((excedem.length / alturas.length) * 100);
+          linhas.push(`Gabarito da zona ${zonaCodigoDetectado}: ${gabaritoStr}`);
+          linhas.push(`${excedem.length} de ${alturas.length} edificação(ões) na quadra ultrapassam o gabarito — aprox. ${pct}% das edificações cadastradas.`);
+          linhas.push(`Altura máxima cadastrada na quadra: ${Math.max(...alturas).toFixed(1)}m.`);
+        } else {
+          linhas.push(`Gabarito da zona não identificado (zona: ${zonaCodigoDetectado || '—'}) — sem base de comparação.`);
+        }
+        linhas.push('Nota: "qt_altura_edificacao" é a altura cadastrada no Mapa Digital da Cidade, pode não refletir reformas/demolições recentes.');
+        results.push({ id: 'verticalizacao', titulo: 'Legislação — Verticalização da Quadra', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+      } else {
+        results.push({ id: 'verticalizacao', titulo: 'Legislação — Verticalização da Quadra', temInterferencia: false, resumoLinhas: ['Nenhuma edificação cadastrada encontrada na quadra.'], imagem: null });
       }
-      results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: true, resumoLinhas: linhas, imagem: img });
     } else {
-      results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: false, resumoLinhas: ['Macroárea não identificada.'], imagem: null });
+      results.push({ id: 'verticalizacao', titulo: 'Legislação — Verticalização da Quadra', temInterferencia: false, resumoLinhas: ['Quadra fiscal não identificada.'], imagem: null });
     }
   } catch (e) {
-    results.push({ id: 'macroarea', titulo: 'Legislação — Macroárea (PDE)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+    results.push({ id: 'verticalizacao', titulo: 'Legislação — Verticalização da Quadra', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
   return results;
 }
-// recalculado aqui, só lido e formatado. Fundo claro, sem screenshot.
 
 // pdf.splitTextToSize só quebra em espaços. Textos densos (ex: dados de
 // tabela como "d500m²500-1k1k-2,5k2,5k-5k5k-10k>10k") têm trechos sem
@@ -3609,7 +3833,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V42</span>
+    <span style="color:#00ACCD">V43</span>
   </div>
 </body>
 </html>
