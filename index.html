@@ -3493,6 +3493,155 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
   return results;
 }
 
+// ── Bloco 3 — Patrimônio Histórico ────────────────────────────────────
+// Camadas WFS confirmadas: patrimonio_cultural_bem_tombado (inclui ZEPEC
+// como atributo — tx_zepec/tx_tipo_categoria_zepec, não é camada própria),
+// patrimonio_cultural_acervo_tombado, patrimonio_cultural_bairro_ambiental,
+// patrimonio_cultural_area_envoltoria_CONDEPHAAT/_CONPRESP/_IPHAN,
+// quadra_fiscal + lote_cidadao (para montar o SQL do item CIT).
+// zoneamento_2016_map4 (Mapa 4 da LPUOS, onde ficam os polígonos de ZEPEC)
+// só existe no WMS — usado aqui só para a imagem, não para checar
+// interferência (isso vem do bem_tombado, que tem WFS).
+//
+// Limitação honesta sobre o item CIT: pesquisei e não existe um link
+// direto (deep-link) que abra o resultado da consulta já preenchido — o
+// Cadastro de Imóveis Tombados do GeoSampa é um formulário (aba
+// "Pesquisar" → "CIT") onde o Setor/Quadra/Lote precisa ser digitado
+// manualmente. Por isso o relatório traz o link para a própria página do
+// GeoSampa + o SQL já formatado para copiar, em vez de fingir uma URL
+// parametrizada que não existe de verdade.
+async function analisarBloco3Patrimonio(terrainGeom, wkt) {
+  const results = [];
+
+  // 1) ZEPEC — atributo dentro de patrimonio_cultural_bem_tombado
+  try {
+    const gj = await fetchWFSByGeom('geoportal:patrimonio_cultural_bem_tombado', wkt, 10);
+    const feats = (gj?.features || []).filter(f => (f.properties?.tx_zepec || f.properties?.tx_tipo_categoria_zepec));
+    if (feats.length > 0) {
+      const linhas = feats.map(f => {
+        const p = f.properties || {};
+        return `ZEPEC: ${p.tx_zepec || '—'} — Categoria: ${p.tx_tipo_categoria_zepec || p.cd_tipo_categoria_zepec || '—'}`;
+      });
+      let img = null;
+      try {
+        img = await renderCompositeMapImage({
+          terrainGeom,
+          layers: ['MapaBase_Topografico', 'zoneamento_2016_map4'],
+          styles: [null, null],
+          marginMeters: 150, widthPx: 1000, heightPx: 750,
+        });
+      } catch (e) {
+        console.error('[PDF][ZEPEC] falha ao gerar imagem:', e);
+        log('warn', `ZEPEC: imagem WMS falhou — ${e.message}`);
+      }
+      results.push({ id: 'zepec', titulo: 'Patrimônio — ZEPEC', temInterferencia: true, resumoLinhas: linhas, imagem: img });
+    } else {
+      results.push({ id: 'zepec', titulo: 'Patrimônio — ZEPEC', temInterferencia: false, resumoLinhas: ['Sem enquadramento ZEPEC identificado.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'zepec', titulo: 'Patrimônio — ZEPEC', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 2) Bens Protegidos — Bens Tombados/em processo, Acervo, Bairro Ambiental
+  // + Áreas Envoltórias (CONPRESP/CONDEPHAAT/IPHAN). Sem imagem — o roteiro
+  // original não pede 📸 para este item.
+  try {
+    const [gjBem, gjAcervo, gjBairro, gjCondephaat, gjConpresp, gjIphan] = await Promise.all([
+      fetchWFSByGeom('geoportal:patrimonio_cultural_bem_tombado', wkt, 10).catch(() => null),
+      fetchWFSByGeom('geoportal:patrimonio_cultural_acervo_tombado', wkt, 10).catch(() => null),
+      fetchWFSByGeom('geoportal:patrimonio_cultural_bairro_ambiental', wkt, 5).catch(() => null),
+      fetchWFSByGeom('geoportal:patrimonio_cultural_area_envoltoria_CONDEPHAAT', wkt, 5).catch(() => null),
+      fetchWFSByGeom('geoportal:patrimonio_cultural_area_envoltoria_CONPRESP', wkt, 5).catch(() => null),
+      fetchWFSByGeom('geoportal:patrimonio_cultural_area_envoltoria_IPHAN', wkt, 5).catch(() => null),
+    ]);
+    const featsBem = gjBem?.features || [];
+    const featsAcervo = gjAcervo?.features || [];
+    const featsBairro = gjBairro?.features || [];
+    const featsCondephaat = gjCondephaat?.features || [];
+    const featsConpresp = gjConpresp?.features || [];
+    const featsIphan = gjIphan?.features || [];
+    const total = featsBem.length + featsAcervo.length + featsBairro.length + featsCondephaat.length + featsConpresp.length + featsIphan.length;
+
+    if (total > 0) {
+      const linhas = [];
+      featsBem.forEach(f => {
+        const p = f.properties || {};
+        linhas.push(`Bem Tombado: ${p.nm_area_tombada || '—'} — situação: ${p.tx_situacao_tombamento || '—'} — nível: ${p.tx_nivel_tombamento || '—'}`);
+        if (p.tx_resolucao_conpresp) linhas.push(`  · Resolução CONPRESP: ${p.tx_resolucao_conpresp}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
+        if (p.tx_resolucao_condephaat) linhas.push(`  · Resolução CONDEPHAAT: ${p.tx_resolucao_condephaat}`);
+        if (p.tx_resolucao_iphan) linhas.push(`  · Resolução IPHAN: ${p.tx_resolucao_iphan}`);
+      });
+      featsAcervo.forEach(f => {
+        const p = f.properties || {};
+        linhas.push(`Acervo: ${p.nm_acervo || '—'} — ${p.nm_endereco || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
+      });
+      featsBairro.forEach(f => {
+        const p = f.properties || {};
+        linhas.push(`Bairro Ambiental: ${p.nm_bairro || '—'}${p.tx_resolucao_conpresp ? ` — Resolução CONPRESP: ${p.tx_resolucao_conpresp}` : ''}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
+      });
+      featsCondephaat.forEach(f => {
+        const p = f.properties || {};
+        linhas.push(`Área Envoltória CONDEPHAAT: ${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_condephaat || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
+      });
+      featsConpresp.forEach(f => {
+        const p = f.properties || {};
+        linhas.push(`Área Envoltória CONPRESP: ${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_conpresp || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
+      });
+      featsIphan.forEach(f => {
+        const p = f.properties || {};
+        linhas.push(`Área Envoltória IPHAN: ${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_iphan || '—'}`);
+      });
+      results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+    } else {
+      results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: false, resumoLinhas: ['Sem bens tombados, acervo, bairro ambiental ou área envoltória (CONPRESP/CONDEPHAAT/IPHAN) incidentes.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 3) CIT (Cadastro de Imóveis Tombados) — sem deep-link possível: inspecionei
+  // o formulário real (https://www3.prefeitura.sp.gov.br/cit/Forms/frmPesquisaGeral.aspx)
+  // e é ASP.NET WebForms clássico (POST com __VIEWSTATE/__EVENTVALIDATION
+  // gerados a cada carregamento de página) — não dá pra montar uma URL fixa
+  // que já preenche o resultado. Campos confirmados: Setor (3 dígitos),
+  // Quadra (3 dígitos), Lote (4 dígitos). O link só abre HTTP (o servidor
+  // não responde em HTTPS moderno) — normal para esse link abrir numa
+  // aba/janela nova a partir do relatório.
+  try {
+    const gjQuadra = await fetchWFSByGeom('geoportal:quadra_fiscal', wkt, 5);
+    const quadraFeats = gjQuadra?.features || [];
+    const gjLote = await fetchWFSByGeom('geoportal:lote_cidadao', wkt, 20).catch(() => null);
+    const loteFeats = gjLote?.features || [];
+    const CIT_URL = 'http://www3.prefeitura.sp.gov.br/cit/Forms/frmPesquisaGeral.aspx';
+
+    if (quadraFeats.length > 0 || loteFeats.length > 0) {
+      const linhas = [];
+      if (loteFeats.length > 0) {
+        loteFeats.forEach(f => {
+          const p = f.properties || {};
+          const setor = String(p.cd_setor_fiscal || '').padStart(3, '0');
+          const quadra = String(p.cd_quadra_fiscal || '').padStart(3, '0');
+          const lote = String(p.cd_lote || '').padStart(4, '0');
+          linhas.push(`Setor: ${setor} · Quadra: ${quadra} · Lote: ${lote} (SQL: ${p.cd_digito_sql || '—'})`);
+        });
+      } else {
+        const p = quadraFeats[0].properties || {};
+        const setor = String(p.cd_setor_fiscal || '').padStart(3, '0');
+        const quadra = String(p.cd_quadra_fiscal || '').padStart(3, '0');
+        linhas.push(`Setor: ${setor} · Quadra: ${quadra} (lote não identificado — confirmar manualmente)`);
+      }
+      linhas.push(`Clique aqui para verificar no CIT: ${CIT_URL} — formulário "Pesquisar SQL", cole Setor/Quadra/Lote acima (o site não é compatível com HTTPS, é normal abrir como http://).`);
+      results.push({ id: 'cit', titulo: 'Patrimônio — CIT (Cadastro de Imóveis Tombados)', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+    } else {
+      results.push({ id: 'cit', titulo: 'Patrimônio — CIT (Cadastro de Imóveis Tombados)', temInterferencia: false, resumoLinhas: ['SQL não identificado para gerar a consulta no CIT.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'cit', titulo: 'Patrimônio — CIT (Cadastro de Imóveis Tombados)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  return results;
+}
+
 // pdf.splitTextToSize só quebra em espaços. Textos densos (ex: dados de
 // tabela como "d500m²500-1k1k-2,5k2,5k-5k5k-10k>10k") têm trechos sem
 // espaço mais largos que a coluna, e passavam direto da margem. Esta
@@ -3868,6 +4017,30 @@ window.exportReportPDF = async function() {
       log('warn', `Bloco de legislação urbana do PDF falhou parcialmente: ${e.message}`);
     }
 
+    // ── PARTE 4 — Patrimônio Histórico (Bloco 3, páginas próprias) ─────
+    try {
+      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+
+      if (terrainWKTForPDF) {
+        log('info', 'Relatório PDF: analisando Patrimônio Histórico (Bloco 3)...');
+        const bloco3 = await analisarBloco3Patrimonio(terrainGeomForPDF, terrainWKTForPDF);
+
+        const resumoCard3 = {
+          titulo: 'Resumo Complementar — Patrimônio Histórico',
+          resumoLinhas: bloco3.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+          imagem: null,
+        };
+        const cardsParaExibir3 = [resumoCard3, ...bloco3.filter(it => it.temInterferencia)];
+
+        pdf.addPage('a4', 'portrait');
+        _addBloco1CardsToPDF(pdf, cardsParaExibir3, now);
+      }
+    } catch (e) {
+      console.error('[PDF][Bloco3]', e);
+      log('warn', `Bloco de patrimônio histórico do PDF falhou parcialmente: ${e.message}`);
+    }
+
     pdf.save(filename);
     log('ok', `PDF exportado: ${filename}`);
 
@@ -3887,7 +4060,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V45</span>
+    <span style="color:#00ACCD">V47</span>
   </div>
 </body>
 </html>
