@@ -2865,10 +2865,18 @@ async function renderCompositeMapImage(opts) {
 
   const layersParam = layers.map(encodeURIComponent).join(',');
   const stylesParam = layers.map((_, i) => styles[i] ? encodeURIComponent(styles[i]) : '').join(',');
+  // "_cb" (cache-bust): o worker cacheia por 7 dias qualquer resposta de
+  // GetMap usando a URL inteira como chave. Se o GeoServer já retornou uma
+  // imagem quebrada (HTTP 200 com pixel de erro) para essa mesma
+  // combinação de bbox/camadas, o worker ficaria servindo esse erro pra
+  // sempre. Como as imagens do relatório são geradas do zero a cada
+  // exportação (não há benefício de cache aqui, diferente do pan/zoom ao
+  // vivo no mapa), sempre buscamos uma versão nova.
   const wmsUrl = `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetMap`
     + `&layers=${layersParam}&styles=${stylesParam}&srs=EPSG:3857`
     + `&width=${widthPx}&height=${heightPx}&format=image/jpeg`
-    + `&bbox=${bbox3857.minX},${bbox3857.minY},${bbox3857.maxX},${bbox3857.maxY}`;
+    + `&bbox=${bbox3857.minX},${bbox3857.minY},${bbox3857.maxX},${bbox3857.maxY}`
+    + `&_cb=${Date.now()}`;
   const tileUrl = buildProxiedWMS(wmsUrl);
 
   const canvas = document.createElement('canvas');
@@ -3833,7 +3841,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V43</span>
+    <span style="color:#00ACCD">V44</span>
   </div>
 </body>
 </html>
