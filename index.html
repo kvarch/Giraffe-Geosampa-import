@@ -3594,9 +3594,9 @@ async function analisarBloco3Patrimonio(terrainGeom, wkt) {
     results.push({ id: 'zepec', titulo: 'Patrimônio — ZEPEC', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
-  // 2) Bens Protegidos — Bens Tombados/em processo, Acervo, Bairro Ambiental
-  // + Áreas Envoltórias (CONPRESP/CONDEPHAAT/IPHAN). Sem imagem — o roteiro
-  // original não pede 📸 para este item.
+  // 2) Bens Protegidos — dividido em itens separados (um por camada), cada
+  // um com sua própria imagem. Sobrepor todas as camadas numa imagem só
+  // ficava confuso sem legenda — testado e descartado a pedido do usuário.
   try {
     const [gjBem, gjAcervo, gjBairro, gjCondephaat, gjConpresp, gjIphan] = await Promise.all([
       fetchWFSByGeom('geoportal:patrimonio_cultural_bem_tombado', wkt, 10).catch(() => null),
@@ -3606,67 +3606,63 @@ async function analisarBloco3Patrimonio(terrainGeom, wkt) {
       fetchWFSByGeom('geoportal:patrimonio_cultural_area_envoltoria_CONPRESP', wkt, 5).catch(() => null),
       fetchWFSByGeom('geoportal:patrimonio_cultural_area_envoltoria_IPHAN', wkt, 5).catch(() => null),
     ]);
-    const featsBem = gjBem?.features || [];
-    const featsAcervo = gjAcervo?.features || [];
-    const featsBairro = gjBairro?.features || [];
-    const featsCondephaat = gjCondephaat?.features || [];
-    const featsConpresp = gjConpresp?.features || [];
-    const featsIphan = gjIphan?.features || [];
-    const total = featsBem.length + featsAcervo.length + featsBairro.length + featsCondephaat.length + featsConpresp.length + featsIphan.length;
 
-    if (total > 0) {
-      const linhas = [];
-      featsBem.forEach(f => {
-        const p = f.properties || {};
-        linhas.push(`Bem Tombado: ${p.nm_area_tombada || '—'} — situação: ${p.tx_situacao_tombamento || '—'} — nível: ${p.tx_nivel_tombamento || '—'}`);
-        if (p.tx_resolucao_conpresp) linhas.push(`  · Resolução CONPRESP: ${p.tx_resolucao_conpresp}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
-        if (p.tx_resolucao_condephaat) linhas.push(`  · Resolução CONDEPHAAT: ${p.tx_resolucao_condephaat}`);
-        if (p.tx_resolucao_iphan) linhas.push(`  · Resolução IPHAN: ${p.tx_resolucao_iphan}`);
-      });
-      featsAcervo.forEach(f => {
-        const p = f.properties || {};
-        linhas.push(`Acervo: ${p.nm_acervo || '—'} — ${p.nm_endereco || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
-      });
-      featsBairro.forEach(f => {
-        const p = f.properties || {};
-        linhas.push(`Bairro Ambiental: ${p.nm_bairro || '—'}${p.tx_resolucao_conpresp ? ` — Resolução CONPRESP: ${p.tx_resolucao_conpresp}` : ''}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
-      });
-      featsCondephaat.forEach(f => {
-        const p = f.properties || {};
-        linhas.push(`Área Envoltória CONDEPHAAT: ${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_condephaat || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
-      });
-      featsConpresp.forEach(f => {
-        const p = f.properties || {};
-        linhas.push(`Área Envoltória CONPRESP: ${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_conpresp || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
-      });
-      featsIphan.forEach(f => {
-        const p = f.properties || {};
-        linhas.push(`Área Envoltória IPHAN: ${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_iphan || '—'}`);
-      });
+    // Helper: sempre gera um item de resultado — com imagem própria (e
+    // interferência) se houver feições, ou "sem incidência" se não houver.
+    async function itemPatrimonio(id, titulo, feats, layerName, montaLinha, semTexto) {
+      const lista = feats || [];
+      if (lista.length === 0) {
+        return { id, titulo, temInterferencia: false, resumoLinhas: [semTexto], imagem: null };
+      }
+      const linhas = lista.map(montaLinha);
       let img = null;
       try {
         img = await renderCompositeMapImage({
           terrainGeom,
-          layers: [
-            'MapaBase_Topografico',
-            'patrimonio_cultural_bem_tombado',
-            'patrimonio_cultural_acervo_tombado',
-            'patrimonio_cultural_bairro_ambiental',
-            'patrimonio_cultural_area_envoltoria_CONDEPHAAT',
-            'patrimonio_cultural_area_envoltoria_CONPRESP',
-            'patrimonio_cultural_area_envoltoria_IPHAN',
-          ],
-          styles: [null, null, null, null, null, null, null],
-          marginMeters: 200, widthPx: 1000, heightPx: 750,
+          layers: ['MapaBase_Topografico', layerName],
+          styles: [null, null],
+          marginMeters: 150, widthPx: 1000, heightPx: 750,
         });
       } catch (e) {
-        console.error('[PDF][Bens Protegidos] falha ao gerar imagem:', e);
-        log('warn', `Bens Protegidos: imagem WMS falhou — ${e.message}`);
+        console.error(`[PDF][${titulo}] falha ao gerar imagem:`, e);
+        log('warn', `${titulo}: imagem WMS falhou — ${e.message}`);
       }
-      results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: true, resumoLinhas: linhas, imagem: img });
-    } else {
-      results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: false, resumoLinhas: ['Sem bens tombados, acervo, bairro ambiental ou área envoltória (CONPRESP/CONDEPHAAT/IPHAN) incidentes.'], imagem: null });
+      return { id, titulo, temInterferencia: true, resumoLinhas: linhas, imagem: img };
     }
+
+    results.push(await itemPatrimonio('bem_tombado', 'Patrimônio — Bem Tombado / Em Processo de Tombamento', gjBem?.features, 'patrimonio_cultural_bem_tombado', f => {
+      const p = f.properties || {};
+      const partes = [`${p.nm_area_tombada || '—'} — situação: ${p.tx_situacao_tombamento || '—'} — nível: ${p.tx_nivel_tombamento || '—'}`];
+      if (p.tx_resolucao_conpresp) partes.push(`Resolução CONPRESP: ${p.tx_resolucao_conpresp}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`);
+      if (p.tx_resolucao_condephaat) partes.push(`Resolução CONDEPHAAT: ${p.tx_resolucao_condephaat}`);
+      if (p.tx_resolucao_iphan) partes.push(`Resolução IPHAN: ${p.tx_resolucao_iphan}`);
+      return partes.join(' — ');
+    }, 'Sem bem tombado ou em processo de tombamento incidente.'));
+
+    results.push(await itemPatrimonio('acervo_tombado', 'Patrimônio — Acervo Tombado', gjAcervo?.features, 'patrimonio_cultural_acervo_tombado', f => {
+      const p = f.properties || {};
+      return `${p.nm_acervo || '—'} — ${p.nm_endereco || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`;
+    }, 'Sem acervo tombado incidente.'));
+
+    results.push(await itemPatrimonio('bairro_ambiental', 'Patrimônio — Bairro Ambiental', gjBairro?.features, 'patrimonio_cultural_bairro_ambiental', f => {
+      const p = f.properties || {};
+      return `${p.nm_bairro || '—'}${p.tx_resolucao_conpresp ? ` — Resolução CONPRESP: ${p.tx_resolucao_conpresp}` : ''}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`;
+    }, 'Sem bairro ambiental incidente.'));
+
+    results.push(await itemPatrimonio('envoltoria_condephaat', 'Patrimônio — Área Envoltória CONDEPHAAT', gjCondephaat?.features, 'patrimonio_cultural_area_envoltoria_CONDEPHAAT', f => {
+      const p = f.properties || {};
+      return `${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_condephaat || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`;
+    }, 'Sem área envoltória CONDEPHAAT incidente.'));
+
+    results.push(await itemPatrimonio('envoltoria_conpresp', 'Patrimônio — Área Envoltória CONPRESP', gjConpresp?.features, 'patrimonio_cultural_area_envoltoria_CONPRESP', f => {
+      const p = f.properties || {};
+      return `${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_conpresp || '—'}${p.tx_link_resolucao ? ` — ${p.tx_link_resolucao}` : ''}`;
+    }, 'Sem área envoltória CONPRESP incidente.'));
+
+    results.push(await itemPatrimonio('envoltoria_iphan', 'Patrimônio — Área Envoltória IPHAN', gjIphan?.features, 'patrimonio_cultural_area_envoltoria_IPHAN', f => {
+      const p = f.properties || {};
+      return `${p.nm_area || '—'} — Resolução: ${p.tx_resolucao_iphan || '—'}`;
+    }, 'Sem área envoltória IPHAN incidente.'));
   } catch (e) {
     results.push({ id: 'bens_protegidos', titulo: 'Patrimônio — Bens Protegidos e Áreas Envoltórias', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
@@ -4132,7 +4128,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V50</span>
+    <span style="color:#00ACCD">V51</span>
   </div>
 </body>
 </html>
