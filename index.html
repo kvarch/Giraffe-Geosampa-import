@@ -3326,6 +3326,32 @@ async function analisarBlocoViario(terrainGeom, wkt) {
     results.push({ id: 'logradouro', titulo: 'Sistema Viário — Logradouro Confrontante', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
+  // Largura das Vias — extrai a "menor dimensão aferida" (leito carroçável)
+  // dos segmentos de logradouro confrontantes. Refaz a busca de propósito
+  // (blocos são independentes) usando o mesmo buffer de 8m do item acima.
+  try {
+    let logrWkt = wkt;
+    if (terrainGeom) {
+      const buffered = turfBuffer(terrainGeom, 8);
+      logrWkt = geojsonToWKT(buffered) || wkt;
+    }
+    const gj = await fetchWFSByGeom('geoportal:segmento_logradouro', logrWkt, 20);
+    const feats = (gj?.features || []).filter(f => f.properties?.qt_leito_carrocavel != null);
+    if (feats.length > 0) {
+      const larguras = feats.map(f => ({ nome: f.properties.nm_logradouro || '—', largura: parseFloat(f.properties.qt_leito_carrocavel) })).filter(x => !isNaN(x.largura));
+      const menor = larguras.reduce((min, x) => x.largura < min.largura ? x : min, larguras[0]);
+      const linhas = [
+        `Menor dimensão aferida (leito carroçável): ${menor.largura.toFixed(1)}m — ${menor.nome}`,
+        ...larguras.map(x => `${x.nome}: ${x.largura.toFixed(1)}m`),
+      ];
+      results.push({ id: 'largura_vias', titulo: 'Sistema Viário — Largura das Vias (Leito Carroçável)', temInterferencia: true, resumoLinhas: linhas, imagem: null });
+    } else {
+      results.push({ id: 'largura_vias', titulo: 'Sistema Viário — Largura das Vias (Leito Carroçável)', temInterferencia: false, resumoLinhas: ['Largura do leito carroçável não disponível para os segmentos confrontantes.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'largura_vias', titulo: 'Sistema Viário — Largura das Vias (Leito Carroçável)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
   return results;
 }
 
@@ -4144,6 +4170,116 @@ async function analisarBlocoTransporte(terrainGeom, wkt) {
   return results;
 }
 
+// ── Bloco Geometria — Regras de Geometria (App Giraffe) ──────────────
+// Inclinação do Terreno: usa curva_mestra (cd_numero_isovalor) cruzando o
+// terreno com pequena margem; se não achar nenhuma, cai para ponto_cotado
+// (cd_altitude) num raio maior. Delta Z / distância horizontal (diagonal
+// do bbox do terreno) = declividade aproximada; alerta se > 30%.
+//
+// Isenção de Recuo Frontal: NÃO é uma leitura oficial de nenhuma camada —
+// é uma ESTIMATIVA geométrica. Pega o(s) segmento(s) de logradouro
+// confrontante(s), amostra pontos a cada ~2m ao longo deles, e verifica
+// quantos desses pontos caem dentro (ou muito perto) de alguma edificação
+// cadastrada (camada `edificacao`, buffer de 2m). A % de pontos "cobertos"
+// vira a estimativa de "ocupação no alinhamento". Isso é dito
+// explicitamente no texto do relatório — não é o critério jurídico exato,
+// é um indicador para triagem visual.
+async function analisarBlocoGeometria(terrainGeom, wkt) {
+  const results = [];
+
+  // Inclinação do Terreno
+  try {
+    let isovalores = [];
+    if (terrainGeom) {
+      const bufferPequeno = turfBuffer(terrainGeom, 15);
+      const wktPequeno = geojsonToWKT(bufferPequeno) || wkt;
+      const gj = await fetchWFSByGeom('geoportal:curva_mestra', wktPequeno, 20);
+      isovalores = (gj?.features || [])
+        .map(f => parseFloat(f.properties?.cd_numero_isovalor))
+        .filter(v => !isNaN(v));
+    }
+    let fonte = 'curva_mestra (curvas de nível mestras)';
+    if (isovalores.length < 2 && terrainGeom) {
+      // fallback: pontos cotados num raio maior
+      const bufferMaior = turfBuffer(terrainGeom, 60);
+      const wktMaior = geojsonToWKT(bufferMaior) || wkt;
+      const gj = await fetchWFSByGeom('geoportal:ponto_cotado', wktMaior, 20);
+      isovalores = (gj?.features || [])
+        .map(f => parseFloat(f.properties?.cd_altitude))
+        .filter(v => !isNaN(v));
+      fonte = 'ponto_cotado (num raio de 60m, poucas curvas próximas)';
+    }
+
+    if (isovalores.length >= 2 && terrainGeom && typeof turf !== 'undefined') {
+      const deltaZ = Math.max(...isovalores) - Math.min(...isovalores);
+      const bbox = turf.bbox({ type: 'Feature', geometry: terrainGeom, properties: {} });
+      const distHorizontal = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[2], bbox[3]]), { units: 'meters' });
+      const slopePct = distHorizontal > 0 ? (deltaZ / distHorizontal) * 100 : 0;
+      const linhas = [
+        `Diferença de cota (Z) na área analisada: ${deltaZ.toFixed(1)}m (fonte: ${fonte})`,
+        `Distância horizontal de referência (diagonal do terreno): ${distHorizontal.toFixed(1)}m`,
+        `Declividade aproximada: ${slopePct.toFixed(1)}%${slopePct > 30 ? ' — ⚠ acima de 30%, terreno com declividade acentuada' : ''}`,
+      ];
+      results.push({ id: 'inclinacao_terreno', titulo: 'Geometria — Inclinação do Terreno', temInterferencia: slopePct > 30, resumoLinhas: linhas, imagem: null });
+    } else {
+      results.push({ id: 'inclinacao_terreno', titulo: 'Geometria — Inclinação do Terreno', temInterferencia: false, resumoLinhas: ['Dados de altimetria insuficientes na região para estimar a declividade.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'inclinacao_terreno', titulo: 'Geometria — Inclinação do Terreno', temInterferencia: false, resumoLinhas: [`Erro no cálculo: ${e.message}`], imagem: null });
+  }
+
+  // Isenção de Recuo Frontal (estimativa geométrica — ver nota acima)
+  try {
+    if (terrainGeom && typeof turf !== 'undefined') {
+      const bufferLogr = turfBuffer(terrainGeom, 8);
+      const wktLogr = geojsonToWKT(bufferLogr) || wkt;
+      const gjLogr = await fetchWFSByGeom('geoportal:segmento_logradouro', wktLogr, 10);
+      const featsLogr = gjLogr?.features || [];
+
+      const bufferEdif = turfBuffer(terrainGeom, 15);
+      const wktEdif = geojsonToWKT(bufferEdif) || wkt;
+      const gjEdif = await fetchWFSByGeom('geoportal:edificacao', wktEdif, 200).catch(() => null);
+      const featsEdif = gjEdif?.features || [];
+
+      if (featsLogr.length > 0 && featsEdif.length > 0) {
+        const footprintsBuffered = featsEdif.map(f => {
+          try { return turfBuffer(f.geometry, 2); } catch (_) { return null; }
+        }).filter(Boolean);
+
+        let totalPontos = 0, pontosCobertos = 0;
+        featsLogr.forEach(fLogr => {
+          const comprimento = turf.length(fLogr, { units: 'meters' });
+          const passo = 2; // amostra a cada 2m
+          for (let d = 0; d < comprimento; d += passo) {
+            const pt = turf.along(fLogr, d, { units: 'meters' });
+            totalPontos++;
+            const coberto = footprintsBuffered.some(poly => {
+              try { return turf.booleanPointInPolygon(pt, poly); } catch (_) { return false; }
+            });
+            if (coberto) pontosCobertos++;
+          }
+        });
+
+        const pct = totalPontos > 0 ? (pontosCobertos / totalPontos) * 100 : 0;
+        const linhas = [
+          `Estimativa de ocupação no alinhamento: ${pct.toFixed(0)}% (${pontosCobertos} de ${totalPontos} pontos amostrados a cada 2m ao longo do logradouro confrontante)`,
+          pct >= 50 ? '⚠ Ocupação ≥ 50% no alinhamento — possível isenção de recuo frontal (confirmar com levantamento de campo).' : 'Abaixo de 50% — indício de recuo frontal presente na maior parte da testada.',
+          'Nota: isto é uma ESTIMATIVA geométrica (edificações cadastradas × logradouro confrontante), não é a leitura oficial de nenhuma camada específica — usar como triagem, não como critério definitivo.',
+        ];
+        results.push({ id: 'recuo_frontal', titulo: 'Geometria — Isenção de Recuo Frontal (estimativa)', temInterferencia: pct >= 50, resumoLinhas: linhas, imagem: null });
+      } else {
+        results.push({ id: 'recuo_frontal', titulo: 'Geometria — Isenção de Recuo Frontal (estimativa)', temInterferencia: false, resumoLinhas: ['Sem logradouro confrontante ou edificações cadastradas suficientes para estimar.'], imagem: null });
+      }
+    } else {
+      results.push({ id: 'recuo_frontal', titulo: 'Geometria — Isenção de Recuo Frontal (estimativa)', temInterferencia: false, resumoLinhas: ['Geometria do terreno indisponível.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'recuo_frontal', titulo: 'Geometria — Isenção de Recuo Frontal (estimativa)', temInterferencia: false, resumoLinhas: [`Erro no cálculo: ${e.message}`], imagem: null });
+  }
+
+  return results;
+}
+
 // ── Bloco 3 — Patrimônio Histórico ────────────────────────────────────
 // ZEPEC foi movido para o Bloco 2 (Legislação Urbana), seguindo a nova
 // estrutura do roteiro do usuário — não é mais tratado aqui.
@@ -4776,6 +4912,31 @@ window.exportReportPDF = async function() {
       log('warn', `Bloco de infraestrutura/meio físico do PDF falhou parcialmente: ${e.message}`);
     }
 
+    // ── PARTE 9 — Regras de Geometria (Inclinação do Terreno, Isenção de
+    // Recuo Frontal — página própria) ──────────────────────────────────
+    try {
+      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+
+      if (terrainWKTForPDF) {
+        log('info', 'Relatório PDF: analisando Regras de Geometria...');
+        const blocoGeometria = await analisarBlocoGeometria(terrainGeomForPDF, terrainWKTForPDF);
+
+        const resumoCardGeometria = {
+          titulo: 'Resumo Complementar — Regras de Geometria',
+          resumoLinhas: blocoGeometria.map(it => `${it.titulo}: ${it.temInterferencia ? 'ver detalhe abaixo' : 'dentro do esperado / sem alerta'}`),
+          imagem: null,
+        };
+        const cardsParaExibirGeometria = [resumoCardGeometria, ...blocoGeometria.filter(it => it.temInterferencia)];
+
+        pdf.addPage('a4', 'portrait');
+        _addBloco1CardsToPDF(pdf, cardsParaExibirGeometria, now);
+      }
+    } catch (e) {
+      console.error('[PDF][BlocoGeometria]', e);
+      log('warn', `Bloco de regras de geometria do PDF falhou parcialmente: ${e.message}`);
+    }
+
     pdf.save(filename);
     log('ok', `PDF exportado: ${filename}`);
 
@@ -4795,7 +4956,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V56</span>
+    <span style="color:#00ACCD">V57</span>
   </div>
 </body>
 </html>
