@@ -2908,6 +2908,29 @@ function _drawGeomOnCanvas(ctx, geometry, bbox3857, w, h, style) {
 // F_XXXX/N.XXX/área/dimensões, exatamente como no portal GeoSampa),
 // e sobrepõe o contorno do terreno em vermelho por cima.
 // Retorna { dataUrl, width, height } ou null se não houver geometria.
+// SLD inline para o quadra_fiscal quando usado como camada de base neutra:
+// bege bem claro, sem rótulo de texto (o estilo nomeado padrão mostra
+// código da quadra, o que fica confuso sobreposto a outras camadas).
+const SLD_QUADRA_NEUTRA = `<?xml version="1.0" encoding="UTF-8"?>
+<StyledLayerDescriptor version="1.0.0" xmlns="http://www.opengis.net/sld" xmlns:ogc="http://www.opengis.net/ogc">
+  <NamedLayer>
+    <Name>quadra_fiscal</Name>
+    <UserStyle>
+      <FeatureTypeStyle>
+        <Rule>
+          <PolygonSymbolizer>
+            <Fill><CssParameter name="fill">#F2ECDD</CssParameter></Fill>
+            <Stroke>
+              <CssParameter name="stroke">#D8CBAA</CssParameter>
+              <CssParameter name="stroke-width">1</CssParameter>
+            </Stroke>
+          </PolygonSymbolizer>
+        </Rule>
+      </FeatureTypeStyle>
+    </UserStyle>
+  </NamedLayer>
+</StyledLayerDescriptor>`;
+
 async function renderCompositeMapImage(opts) {
   const {
     terrainGeom,
@@ -2922,11 +2945,11 @@ async function renderCompositeMapImage(opts) {
   if (!terrainGeom) return null;
 
   // Troca a base "MapaBase_Topografico" (curvas de nível) pela combinação
-  // "MapaBase_Politico" + "quadra_fiscal" — mostra a posição do lote em
-  // relação às quadras/tecido urbano vizinho, mais claro que topografia
-  // (a pedido do usuário). Ponto único de mudança: como toda chamada de
-  // renderCompositeMapImage passa por aqui, não precisa editar cada uma
-  // das dezenas de chamadas espalhadas pelo código.
+  // "MapaBase_Politico" + "quadra_fiscal" (bege neutro, sem rótulo) — mostra
+  // a posição do lote em relação às quadras/tecido urbano vizinho, mais
+  // claro que topografia (a pedido do usuário). Ponto único de mudança:
+  // como toda chamada de renderCompositeMapImage passa por aqui, não
+  // precisa editar cada uma das dezenas de chamadas espalhadas pelo código.
   // Pula o quadra_fiscal extra se a própria chamada já usa
   // quadra_fiscal/lote_cidadao como camada temática (evita redundância).
   let layers = layersIn;
@@ -2935,7 +2958,7 @@ async function renderCompositeMapImage(opts) {
   if (idxTopo !== -1) {
     const jaTemQuadra = layers.includes('quadra_fiscal') || layers.includes('lote_cidadao');
     const baseLayers = jaTemQuadra ? ['MapaBase_Politico'] : ['MapaBase_Politico', 'quadra_fiscal'];
-    const baseStyles = jaTemQuadra ? [null] : [null, 'polygon.QuadraFiscal.SF.CamadaLabel'];
+    const baseStyles = jaTemQuadra ? [null] : [null, null]; // quadra_fiscal usa SLD_BODY, não style nomeado
     layers = [...layers.slice(0, idxTopo), ...baseLayers, ...layers.slice(idxTopo + 1)];
     styles = [...styles.slice(0, idxTopo), ...baseStyles, ...styles.slice(idxTopo + 1)];
   }
@@ -2962,14 +2985,21 @@ async function renderCompositeMapImage(opts) {
   // "_cb" (cache-bust): o worker cacheia por 7 dias qualquer resposta de
   // GetMap usando a URL inteira como chave. Como as imagens do relatório
   // são geradas do zero a cada exportação, sempre buscamos uma versão nova.
-  function buildGetMapUrl(layersArr, stylesArr) {
-    const layersParam = layersArr.map(encodeURIComponent).join(',');
-    const stylesParam = layersArr.map((_, i) => stylesArr[i] ? encodeURIComponent(stylesArr[i]) : '').join(',');
-    return `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetMap`
-      + `&layers=${layersParam}&styles=${stylesParam}&srs=EPSG:3857`
-      + `&width=${widthPx}&height=${heightPx}&format=image/jpeg`
+  // Cada camada agora é buscada em uma chamada GetMap separada (em vez de
+  // uma única chamada combinada) — isso permite SLD_BODY customizado por
+  // camada (ex: bege neutro no quadra_fiscal) e isola falhas: uma camada
+  // ruim não derruba as outras. A base (índice 0) é opaca (JPEG); as
+  // demais são PNG transparente, desenhadas por cima em sequência.
+  function buildSingleLayerUrl(layerName, styleName, { transparent, sldBody } = {}) {
+    const format = transparent ? 'image/png' : 'image/jpeg';
+    let url = `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetMap`
+      + `&layers=${encodeURIComponent(layerName)}&srs=EPSG:3857`
+      + `&width=${widthPx}&height=${heightPx}&format=${encodeURIComponent(format)}`
+      + (transparent ? '&transparent=true' : '')
       + `&bbox=${bbox3857.minX},${bbox3857.minY},${bbox3857.maxX},${bbox3857.maxY}`
       + `&_cb=${Date.now()}`;
+    url += sldBody ? `&sld_body=${encodeURIComponent(sldBody)}` : `&styles=${styleName ? encodeURIComponent(styleName) : ''}`;
+    return url;
   }
 
   const canvas = document.createElement('canvas');
@@ -2978,35 +3008,32 @@ async function renderCompositeMapImage(opts) {
 
   let bgOk = false;
   try {
-    const img = await _loadImageWithRetry(buildProxiedWMS(buildGetMapUrl(layers, styles)));
-    ctx.drawImage(img, 0, 0, widthPx, heightPx);
+    const url0 = buildSingleLayerUrl(layers[0], styles[0], { transparent: false });
+    const img0 = await _loadImageWithRetry(buildProxiedWMS(url0));
+    ctx.drawImage(img0, 0, 0, widthPx, heightPx);
     bgOk = !_isCanvasBlank(ctx, widthPx, heightPx);
   } catch (e) {
-    console.warn('[WMS] falha na chamada combinada:', e);
-  }
-
-  if (!bgOk && layers.length > 1) {
-    // Uma camada combinada às vezes trava a renderização no servidor (comum
-    // quando uma delas tem rótulos densos, tipo lote_cidadao) — o GeoServer
-    // devolve HTTP 200 com imagem em branco em vez de erro de verdade.
-    // Tenta de novo só com a primeira camada (normalmente o mapa base).
-    try {
-      ctx.clearRect(0, 0, widthPx, heightPx);
-      const img2 = await _loadImageWithRetry(buildProxiedWMS(buildGetMapUrl([layers[0]], [styles[0]])));
-      ctx.drawImage(img2, 0, 0, widthPx, heightPx);
-      bgOk = !_isCanvasBlank(ctx, widthPx, heightPx);
-      if (bgOk) {
-        log('warn', `Camada "${layers[1]}" veio em branco no servidor (comum com áreas muito densas de rótulos) — mostrando só o mapa base.`);
-      }
-    } catch (e) {
-      console.warn('[WMS] falha no fallback (só mapa base):', e);
-    }
+    console.warn('[WMS] falha na camada de base:', e);
   }
 
   if (!bgOk) {
     ctx.fillStyle = '#e8e8e8'; ctx.fillRect(0, 0, widthPx, heightPx);
     ctx.fillStyle = '#888'; ctx.font = '16px sans-serif';
     ctx.fillText('Fundo WMS indisponível no momento da geração', 20, 30);
+  }
+
+  // Demais camadas — desenhadas por cima, cada falha é isolada (um alerta
+  // no log, mas não derruba a imagem toda).
+  for (let i = 1; i < layers.length; i++) {
+    try {
+      const sldBody = layers[i] === 'quadra_fiscal' ? SLD_QUADRA_NEUTRA : null;
+      const url = buildSingleLayerUrl(layers[i], styles[i], { transparent: true, sldBody });
+      const img = await _loadImageWithRetry(buildProxiedWMS(url));
+      ctx.drawImage(img, 0, 0, widthPx, heightPx);
+    } catch (e) {
+      console.warn(`[WMS] falha na camada "${layers[i]}":`, e);
+      log('warn', `Camada "${layers[i]}" falhou nesta imagem — seguindo sem ela.`);
+    }
   }
 
   extraOverlays.forEach(ov => _drawGeomOnCanvas(ctx, ov.geometry, bbox3857, widthPx, heightPx, ov.style));
@@ -4603,6 +4630,97 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
 // Empilha cada camada analisada (título + imagem real do WMS + texto);
 // se o card seguinte couber no espaço restante da página atual, ele
 // entra na mesma folha — senão, quebra para uma nova página A4.
+// Desenha a lista-resumo de TODAS as camadas analisadas no relatório,
+// agrupadas por categoria (mesma estrutura que o usuário definiu),
+// mostrando pra cada uma se foi encontrada alguma restrição/incentivo/
+// interferência ou não. Substitui as seções "Outros itens - Verificar" e
+// "Outras sobreposições - verificar manualmente" do relatório visual —
+// agora com dado real, já que essas camadas passaram a ser analisadas.
+function _addResumoTodasCamadas(pdf, blocos, generatedAt) {
+  const pageW = 210, pageH = 297, marginX = 12, marginTop = 14, marginBottom = 14;
+  const contentW = pageW - marginX * 2;
+  let cursorY = marginTop;
+
+  function drawHeader() {
+    pdf.setFontSize(8); pdf.setTextColor(140, 140, 140);
+    pdf.text('KV Arquitetos · Resumo de Todas as Camadas Analisadas', marginX, 8);
+    pdf.text(generatedAt, pageW - marginX, 8, { align: 'right' });
+    pdf.setDrawColor(0, 172, 205); pdf.setLineWidth(0.4);
+    pdf.line(marginX, 10, pageW - marginX, 10);
+  }
+  function newPage() {
+    pdf.addPage('a4', 'portrait');
+    cursorY = marginTop;
+    drawHeader();
+  }
+  function ensureSpace(h) {
+    if (cursorY + h > pageH - marginBottom) newPage();
+  }
+
+  pdf.addPage('a4', 'portrait');
+  cursorY = marginTop;
+  drawHeader();
+
+  pdf.setFontSize(13); pdf.setFont(undefined, 'bold'); pdf.setTextColor(20, 20, 20);
+  pdf.text('Resumo de Todas as Camadas Analisadas', marginX, cursorY + 5);
+  pdf.setFont(undefined, 'normal');
+  cursorY += 9;
+  pdf.setFontSize(8.5); pdf.setTextColor(110, 110, 110);
+  const introWrapped = _safeWrap(pdf, 'Lista de todas as camadas do GeoSampa cruzadas com o terreno neste relatório, indicando se foi encontrada alguma restrição, incentivo ou interferência. Substitui a checagem manual de "outros itens" — os dados abaixo já refletem a análise automática feita nas páginas seguintes.', contentW);
+  pdf.text(introWrapped, marginX, cursorY + 3);
+  cursorY += introWrapped.length * 3.8 + 6;
+
+  const categorias = [
+    { titulo: '1. Cadastro / Cadastro Fiscal', items: blocos.bloco1 },
+    { titulo: '2. Sistema Viário', items: blocos.blocoViario },
+    { titulo: '3. Legislação Urbana', items: blocos.bloco2 },
+    { titulo: '4. Patrimônio Cultural', items: blocos.bloco3 },
+    { titulo: '5. Transporte', items: blocos.blocoTransporte },
+    { titulo: '6. Licenciamento Ambiental', items: blocos.blocoAmbiental },
+    { titulo: '7-10. Infraestrutura Urbana, Meio Físico, Equipamentos e Verde', items: blocos.blocoInfra },
+    { titulo: '⚙ Regras de Geometria (App Giraffe)', items: blocos.blocoGeometria },
+  ];
+
+  categorias.forEach(cat => {
+    if (!cat.items || cat.items.length === 0) return;
+
+    ensureSpace(9);
+    pdf.setFontSize(10.5); pdf.setFont(undefined, 'bold'); pdf.setTextColor(0, 90, 110);
+    pdf.text(cat.titulo, marginX, cursorY + 4);
+    pdf.setFont(undefined, 'normal');
+    cursorY += 7;
+
+    const colStatusW = 46;
+    const colNomeW = contentW - colStatusW;
+    const rowH = 5.4;
+
+    cat.items.forEach((it, idx) => {
+      const nomeWrapped = _safeWrap(pdf, it.titulo, colNomeW - 3);
+      const thisRowH = Math.max(rowH, nomeWrapped.length * 3.8 + 1.6);
+      ensureSpace(thisRowH);
+
+      pdf.setFillColor(idx % 2 === 0 ? 247 : 255, idx % 2 === 0 ? 249 : 255, idx % 2 === 0 ? 250 : 255);
+      pdf.rect(marginX, cursorY, contentW, thisRowH, 'F');
+
+      pdf.setFontSize(8.4); pdf.setTextColor(40, 40, 40);
+      pdf.text(nomeWrapped, marginX + 2, cursorY + 3.8);
+
+      pdf.setFontSize(8.2);
+      if (it.temInterferencia) {
+        pdf.setTextColor(180, 90, 10); pdf.setFont(undefined, 'bold');
+        pdf.text('COM INTERFERÊNCIA', marginX + colNomeW + 2, cursorY + 3.8);
+        pdf.setFont(undefined, 'normal');
+      } else {
+        pdf.setTextColor(60, 140, 90);
+        pdf.text('sem incidência', marginX + colNomeW + 2, cursorY + 3.8);
+      }
+      cursorY += thisRowH;
+    });
+
+    cursorY += 4;
+  });
+}
+
 function _addBloco1CardsToPDF(pdf, items, generatedAt) {
   const pageW = 210, pageH = 297, marginX = 12, marginBottom = 14;
   const contentW = pageW - marginX * 2;
@@ -4729,212 +4847,152 @@ window.exportReportPDF = async function() {
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
 
-    // ── PARTE 1 — Resumo (cópia fiel do relatório visual já exibido
-    // no painel do app; nenhuma reconstrução de layout aqui) ────────
+    const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+    const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+
+    // ── Roda todas as análises UMA VEZ SÓ, antes de desenhar qualquer
+    // página. Isso permite montar a lista-resumo de todas as camadas na
+    // Parte 1, e evita reprocessar (refazer as mesmas buscas WFS/WMS) nas
+    // páginas de detalhe de cada bloco mais adiante.
+    let bloco1 = [], blocoViario = [], bloco2 = [], bloco3 = [], blocoTransporte = [],
+        blocoAmbiental = [], blocoInfra = [], blocoGeometria = [];
+
+    if (terrainWKTForPDF) {
+      try { log('info', 'Relatório PDF: analisando Cadastro e Base Territorial...'); bloco1 = await analisarBloco1Cadastral(terrainGeomForPDF, terrainWKTForPDF); }
+      catch (e) { console.error('[PDF][Bloco1]', e); log('warn', `Cadastro falhou parcialmente: ${e.message}`); }
+
+      try { log('info', 'Relatório PDF: analisando Sistema Viário...'); blocoViario = await analisarBlocoViario(terrainGeomForPDF, terrainWKTForPDF); }
+      catch (e) { console.error('[PDF][BlocoViario]', e); log('warn', `Sistema Viário falhou parcialmente: ${e.message}`); }
+
+      try { log('info', 'Relatório PDF: analisando Legislação Urbana...'); bloco2 = await analisarBloco2Legislacao(terrainGeomForPDF, terrainWKTForPDF); }
+      catch (e) { console.error('[PDF][Bloco2]', e); log('warn', `Legislação Urbana falhou parcialmente: ${e.message}`); }
+
+      try { log('info', 'Relatório PDF: analisando Patrimônio Histórico...'); bloco3 = await analisarBloco3Patrimonio(terrainGeomForPDF, terrainWKTForPDF); }
+      catch (e) { console.error('[PDF][Bloco3]', e); log('warn', `Patrimônio Histórico falhou parcialmente: ${e.message}`); }
+
+      try { log('info', 'Relatório PDF: analisando Transporte...'); blocoTransporte = await analisarBlocoTransporte(terrainGeomForPDF, terrainWKTForPDF); }
+      catch (e) { console.error('[PDF][BlocoTransporte]', e); log('warn', `Transporte falhou parcialmente: ${e.message}`); }
+
+      try { log('info', 'Relatório PDF: analisando Licenciamento Ambiental...'); blocoAmbiental = await analisarBlocoAmbiental(terrainGeomForPDF, terrainWKTForPDF); }
+      catch (e) { console.error('[PDF][BlocoAmbiental]', e); log('warn', `Licenciamento Ambiental falhou parcialmente: ${e.message}`); }
+
+      try { log('info', 'Relatório PDF: analisando Infraestrutura, Meio Físico e Equipamentos...'); blocoInfra = await analisarBlocoInfraestrutura(terrainGeomForPDF, terrainWKTForPDF); }
+      catch (e) { console.error('[PDF][BlocoInfra]', e); log('warn', `Infraestrutura/Meio Físico falhou parcialmente: ${e.message}`); }
+
+      try { log('info', 'Relatório PDF: analisando Regras de Geometria...'); blocoGeometria = await analisarBlocoGeometria(terrainGeomForPDF, terrainWKTForPDF); }
+      catch (e) { console.error('[PDF][BlocoGeometria]', e); log('warn', `Regras de Geometria falhou parcialmente: ${e.message}`); }
+    } else {
+      log('warn', 'Blocos de análise pulados: nenhuma geometria de terreno capturada. Gere o relatório visual novamente antes de exportar.');
+    }
+
+    // ── PARTE 1 — Resumo (cópia fiel do relatório visual já exibido no
+    // painel do app) + lista-resumo de todas as camadas analisadas ─────
     const reportContentEl = document.getElementById('reportContent');
     _renderVisualReportAsText(pdf, reportContentEl, now);
+
+    _addResumoTodasCamadas(pdf, {
+      bloco1, blocoViario, bloco2, bloco3, blocoTransporte, blocoAmbiental, blocoInfra, blocoGeometria,
+    }, now);
 
     // Nome do arquivo a partir das zonas já visíveis no relatório
     const allZoneBadges = reportContentEl ? reportContentEl.querySelectorAll('.report-zone-badge') : [];
     const zonesInReport = Array.from(allZoneBadges).map(b => b.textContent.replace('🏙','').trim()).filter(Boolean);
     const filename = `KV_Relatorio_Urbanistico_${zonesInReport.join('-')||params._zone||'SP'}_${new Date().toISOString().slice(0,10)}.pdf`;
 
-    // ── PARTE 2 — Cadastro e Base Territorial (páginas próprias,
-    // separadas do resumo) ───────────────────────────────────────────
-    try {
-      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
-      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
-
-      if (terrainWKTForPDF) {
-        log('info', 'Relatório PDF: analisando Cadastro e Base Territorial (Bloco 1)...');
-        const bloco1 = await analisarBloco1Cadastral(terrainGeomForPDF, terrainWKTForPDF);
-
-        const resumoCard = {
-          titulo: 'Resumo Complementar — Cadastro e Base Territorial',
-          resumoLinhas: bloco1.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
-          imagem: null,
-        };
-        const cardsParaExibir = [resumoCard, ...bloco1.filter(it => it.temInterferencia)];
-
-        pdf.addPage('a4', 'portrait'); // força início em página nova, separada da Parte 1
-        _addBloco1CardsToPDF(pdf, cardsParaExibir, now);
-      } else {
-        log('warn', 'Bloco cadastral do PDF pulado: nenhuma geometria de terreno capturada. Gere o relatório visual novamente antes de exportar.');
-      }
-    } catch (e) {
-      console.error('[PDF][Bloco1]', e);
-      log('warn', `Bloco cadastral do PDF falhou parcialmente: ${e.message}`);
+    // ── PARTE 2 — Cadastro e Base Territorial ──────────────────────────
+    if (bloco1.length) {
+      const resumoCard = {
+        titulo: 'Resumo Complementar — Cadastro e Base Territorial',
+        resumoLinhas: bloco1.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+        imagem: null,
+      };
+      const cardsParaExibir = [resumoCard, ...bloco1.filter(it => it.temInterferencia)];
+      pdf.addPage('a4', 'portrait');
+      _addBloco1CardsToPDF(pdf, cardsParaExibir, now);
     }
 
-    // ── PARTE 3 — Sistema Viário (Bloco Viário, página própria) ────────
-    try {
-      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
-      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
-
-      if (terrainWKTForPDF) {
-        log('info', 'Relatório PDF: analisando Sistema Viário...');
-        const blocoViario = await analisarBlocoViario(terrainGeomForPDF, terrainWKTForPDF);
-
-        const resumoCardViario = {
-          titulo: 'Resumo Complementar — Sistema Viário',
-          resumoLinhas: blocoViario.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
-          imagem: null,
-        };
-        const cardsParaExibirViario = [resumoCardViario, ...blocoViario.filter(it => it.temInterferencia)];
-
-        pdf.addPage('a4', 'portrait');
-        _addBloco1CardsToPDF(pdf, cardsParaExibirViario, now);
-      }
-    } catch (e) {
-      console.error('[PDF][BlocoViario]', e);
-      log('warn', `Bloco de sistema viário do PDF falhou parcialmente: ${e.message}`);
+    // ── PARTE 3 — Sistema Viário ────────────────────────────────────────
+    if (blocoViario.length) {
+      const resumoCardViario = {
+        titulo: 'Resumo Complementar — Sistema Viário',
+        resumoLinhas: blocoViario.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+        imagem: null,
+      };
+      const cardsParaExibirViario = [resumoCardViario, ...blocoViario.filter(it => it.temInterferencia)];
+      pdf.addPage('a4', 'portrait');
+      _addBloco1CardsToPDF(pdf, cardsParaExibirViario, now);
     }
 
-    // ── PARTE 4 — Legislação Urbana e Potencial Construtivo (Bloco 2,
-    // páginas próprias) ───────────────────────────────────────────────
-    try {
-      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
-      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
-
-      if (terrainWKTForPDF) {
-        log('info', 'Relatório PDF: analisando Legislação Urbana (Bloco 2)...');
-        const bloco2 = await analisarBloco2Legislacao(terrainGeomForPDF, terrainWKTForPDF);
-
-        const resumoCard2 = {
-          titulo: 'Resumo Complementar — Legislação Urbana e Potencial Construtivo',
-          resumoLinhas: bloco2.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
-          imagem: null,
-        };
-        const cardsParaExibir2 = [resumoCard2, ...bloco2.filter(it => it.temInterferencia)];
-
-        pdf.addPage('a4', 'portrait');
-        _addBloco1CardsToPDF(pdf, cardsParaExibir2, now);
-      }
-    } catch (e) {
-      console.error('[PDF][Bloco2]', e);
-      log('warn', `Bloco de legislação urbana do PDF falhou parcialmente: ${e.message}`);
+    // ── PARTE 4 — Legislação Urbana e Potencial Construtivo ────────────
+    if (bloco2.length) {
+      const resumoCard2 = {
+        titulo: 'Resumo Complementar — Legislação Urbana e Potencial Construtivo',
+        resumoLinhas: bloco2.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+        imagem: null,
+      };
+      const cardsParaExibir2 = [resumoCard2, ...bloco2.filter(it => it.temInterferencia)];
+      pdf.addPage('a4', 'portrait');
+      _addBloco1CardsToPDF(pdf, cardsParaExibir2, now);
     }
 
-    // ── PARTE 5 — Patrimônio Histórico (Bloco 3, páginas próprias) ─────
-    try {
-      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
-      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
-
-      if (terrainWKTForPDF) {
-        log('info', 'Relatório PDF: analisando Patrimônio Histórico (Bloco 3)...');
-        const bloco3 = await analisarBloco3Patrimonio(terrainGeomForPDF, terrainWKTForPDF);
-
-        const resumoCard3 = {
-          titulo: 'Resumo Complementar — Patrimônio Histórico',
-          resumoLinhas: bloco3.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
-          imagem: null,
-        };
-        const cardsParaExibir3 = [resumoCard3, ...bloco3.filter(it => it.temInterferencia)];
-
-        pdf.addPage('a4', 'portrait');
-        _addBloco1CardsToPDF(pdf, cardsParaExibir3, now);
-      }
-    } catch (e) {
-      console.error('[PDF][Bloco3]', e);
-      log('warn', `Bloco de patrimônio histórico do PDF falhou parcialmente: ${e.message}`);
+    // ── PARTE 5 — Patrimônio Histórico ─────────────────────────────────
+    if (bloco3.length) {
+      const resumoCard3 = {
+        titulo: 'Resumo Complementar — Patrimônio Histórico',
+        resumoLinhas: bloco3.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+        imagem: null,
+      };
+      const cardsParaExibir3 = [resumoCard3, ...bloco3.filter(it => it.temInterferencia)];
+      pdf.addPage('a4', 'portrait');
+      _addBloco1CardsToPDF(pdf, cardsParaExibir3, now);
     }
 
-    // ── PARTE 6 — Transporte (Metrô e Trem, página própria) ────────────
-    try {
-      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
-      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
-
-      if (terrainWKTForPDF) {
-        log('info', 'Relatório PDF: analisando Transporte (Metrô e Trem)...');
-        const blocoTransporte = await analisarBlocoTransporte(terrainGeomForPDF, terrainWKTForPDF);
-
-        const resumoCardTransporte = {
-          titulo: 'Resumo Complementar — Transporte (Metrô e Trem)',
-          resumoLinhas: blocoTransporte.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
-          imagem: null,
-        };
-        const cardsParaExibirTransporte = [resumoCardTransporte, ...blocoTransporte.filter(it => it.temInterferencia)];
-
-        pdf.addPage('a4', 'portrait');
-        _addBloco1CardsToPDF(pdf, cardsParaExibirTransporte, now);
-      }
-    } catch (e) {
-      console.error('[PDF][BlocoTransporte]', e);
-      log('warn', `Bloco de transporte do PDF falhou parcialmente: ${e.message}`);
+    // ── PARTE 6 — Transporte (Metrô e Trem) ────────────────────────────
+    if (blocoTransporte.length) {
+      const resumoCardTransporte = {
+        titulo: 'Resumo Complementar — Transporte (Metrô e Trem)',
+        resumoLinhas: blocoTransporte.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+        imagem: null,
+      };
+      const cardsParaExibirTransporte = [resumoCardTransporte, ...blocoTransporte.filter(it => it.temInterferencia)];
+      pdf.addPage('a4', 'portrait');
+      _addBloco1CardsToPDF(pdf, cardsParaExibirTransporte, now);
     }
 
-    // ── PARTE 7 — Licenciamento Ambiental (página própria) ─────────────
-    try {
-      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
-      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
-
-      if (terrainWKTForPDF) {
-        log('info', 'Relatório PDF: analisando Licenciamento Ambiental...');
-        const blocoAmbiental = await analisarBlocoAmbiental(terrainGeomForPDF, terrainWKTForPDF);
-
-        const resumoCardAmbiental = {
-          titulo: 'Resumo Complementar — Licenciamento Ambiental',
-          resumoLinhas: blocoAmbiental.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
-          imagem: null,
-        };
-        const cardsParaExibirAmbiental = [resumoCardAmbiental, ...blocoAmbiental.filter(it => it.temInterferencia)];
-
-        pdf.addPage('a4', 'portrait');
-        _addBloco1CardsToPDF(pdf, cardsParaExibirAmbiental, now);
-      }
-    } catch (e) {
-      console.error('[PDF][BlocoAmbiental]', e);
-      log('warn', `Bloco de licenciamento ambiental do PDF falhou parcialmente: ${e.message}`);
+    // ── PARTE 7 — Licenciamento Ambiental ──────────────────────────────
+    if (blocoAmbiental.length) {
+      const resumoCardAmbiental = {
+        titulo: 'Resumo Complementar — Licenciamento Ambiental',
+        resumoLinhas: blocoAmbiental.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+        imagem: null,
+      };
+      const cardsParaExibirAmbiental = [resumoCardAmbiental, ...blocoAmbiental.filter(it => it.temInterferencia)];
+      pdf.addPage('a4', 'portrait');
+      _addBloco1CardsToPDF(pdf, cardsParaExibirAmbiental, now);
     }
 
-    // ── PARTE 8 — Infraestrutura Urbana, Meio Físico, Equipamentos e
-    // Verde (página própria) ───────────────────────────────────────────
-    try {
-      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
-      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
-
-      if (terrainWKTForPDF) {
-        log('info', 'Relatório PDF: analisando Infraestrutura, Meio Físico e Equipamentos...');
-        const blocoInfra = await analisarBlocoInfraestrutura(terrainGeomForPDF, terrainWKTForPDF);
-
-        const resumoCardInfra = {
-          titulo: 'Resumo Complementar — Infraestrutura, Meio Físico, Equipamentos e Verde',
-          resumoLinhas: blocoInfra.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
-          imagem: null,
-        };
-        const cardsParaExibirInfra = [resumoCardInfra, ...blocoInfra.filter(it => it.temInterferencia)];
-
-        pdf.addPage('a4', 'portrait');
-        _addBloco1CardsToPDF(pdf, cardsParaExibirInfra, now);
-      }
-    } catch (e) {
-      console.error('[PDF][BlocoInfra]', e);
-      log('warn', `Bloco de infraestrutura/meio físico do PDF falhou parcialmente: ${e.message}`);
+    // ── PARTE 8 — Infraestrutura Urbana, Meio Físico, Equipamentos e Verde
+    if (blocoInfra.length) {
+      const resumoCardInfra = {
+        titulo: 'Resumo Complementar — Infraestrutura, Meio Físico, Equipamentos e Verde',
+        resumoLinhas: blocoInfra.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+        imagem: null,
+      };
+      const cardsParaExibirInfra = [resumoCardInfra, ...blocoInfra.filter(it => it.temInterferencia)];
+      pdf.addPage('a4', 'portrait');
+      _addBloco1CardsToPDF(pdf, cardsParaExibirInfra, now);
     }
 
-    // ── PARTE 9 — Regras de Geometria (Inclinação do Terreno, Isenção de
-    // Recuo Frontal — página própria) ──────────────────────────────────
-    try {
-      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
-      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
-
-      if (terrainWKTForPDF) {
-        log('info', 'Relatório PDF: analisando Regras de Geometria...');
-        const blocoGeometria = await analisarBlocoGeometria(terrainGeomForPDF, terrainWKTForPDF);
-
-        const resumoCardGeometria = {
-          titulo: 'Resumo Complementar — Regras de Geometria',
-          resumoLinhas: blocoGeometria.map(it => `${it.titulo}: ${it.temInterferencia ? 'ver detalhe abaixo' : 'dentro do esperado / sem alerta'}`),
-          imagem: null,
-        };
-        const cardsParaExibirGeometria = [resumoCardGeometria, ...blocoGeometria.filter(it => it.temInterferencia)];
-
-        pdf.addPage('a4', 'portrait');
-        _addBloco1CardsToPDF(pdf, cardsParaExibirGeometria, now);
-      }
-    } catch (e) {
-      console.error('[PDF][BlocoGeometria]', e);
-      log('warn', `Bloco de regras de geometria do PDF falhou parcialmente: ${e.message}`);
+    // ── PARTE 9 — Regras de Geometria ──────────────────────────────────
+    if (blocoGeometria.length) {
+      const resumoCardGeometria = {
+        titulo: 'Resumo Complementar — Regras de Geometria',
+        resumoLinhas: blocoGeometria.map(it => `${it.titulo}: ${it.temInterferencia ? 'ver detalhe abaixo' : 'dentro do esperado / sem alerta'}`),
+        imagem: null,
+      };
+      const cardsParaExibirGeometria = [resumoCardGeometria, ...blocoGeometria.filter(it => it.temInterferencia)];
+      pdf.addPage('a4', 'portrait');
+      _addBloco1CardsToPDF(pdf, cardsParaExibirGeometria, now);
     }
 
     pdf.save(filename);
@@ -4956,7 +5014,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V57</span>
+    <span style="color:#00ACCD">V58</span>
   </div>
 </body>
 </html>
