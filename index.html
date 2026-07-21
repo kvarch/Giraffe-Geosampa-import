@@ -2911,8 +2911,8 @@ function _drawGeomOnCanvas(ctx, geometry, bbox3857, w, h, style) {
 async function renderCompositeMapImage(opts) {
   const {
     terrainGeom,
-    layers = ['MapaBase_Topografico'],
-    styles = [],
+    layers: layersIn = ['MapaBase_Topografico'],
+    styles: stylesIn = [],
     marginMeters = 120,
     widthPx = 900,
     heightPx = 650,
@@ -2920,6 +2920,25 @@ async function renderCompositeMapImage(opts) {
     extraOverlays = [], // [{ geometry, style:{stroke,fill,fillOpacity,lineWidth} }] — desenhados antes do destaque do terreno
   } = opts;
   if (!terrainGeom) return null;
+
+  // Troca a base "MapaBase_Topografico" (curvas de nível) pela combinação
+  // "MapaBase_Politico" + "quadra_fiscal" — mostra a posição do lote em
+  // relação às quadras/tecido urbano vizinho, mais claro que topografia
+  // (a pedido do usuário). Ponto único de mudança: como toda chamada de
+  // renderCompositeMapImage passa por aqui, não precisa editar cada uma
+  // das dezenas de chamadas espalhadas pelo código.
+  // Pula o quadra_fiscal extra se a própria chamada já usa
+  // quadra_fiscal/lote_cidadao como camada temática (evita redundância).
+  let layers = layersIn;
+  let styles = stylesIn;
+  const idxTopo = layers.indexOf('MapaBase_Topografico');
+  if (idxTopo !== -1) {
+    const jaTemQuadra = layers.includes('quadra_fiscal') || layers.includes('lote_cidadao');
+    const baseLayers = jaTemQuadra ? ['MapaBase_Politico'] : ['MapaBase_Politico', 'quadra_fiscal'];
+    const baseStyles = jaTemQuadra ? [null] : [null, 'polygon.QuadraFiscal.SF.CamadaLabel'];
+    layers = [...layers.slice(0, idxTopo), ...baseLayers, ...layers.slice(idxTopo + 1)];
+    styles = [...styles.slice(0, idxTopo), ...baseStyles, ...styles.slice(idxTopo + 1)];
+  }
 
   let margin = marginMeters;
   const terrainBboxRaw = featureToBBOX({ geometry: terrainGeom });
@@ -3042,6 +3061,66 @@ async function _itemCamadaUnica(terrainGeom, wkt, opts) {
       return { id, titulo, temInterferencia: true, resumoLinhas: linhas, imagem: img };
     }
     return { id, titulo, temInterferencia: false, resumoLinhas: [semTexto], imagem: null };
+  } catch (e) {
+    return { id, titulo, temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null };
+  }
+}
+
+// Variante de _itemCamadaUnica para camadas de PONTO/LINHA onde o que
+// importa é a distância até a feição mais próxima (nearest neighbor),
+// não interseção direta — usado no Bloco Transporte (estações/linhas de
+// metrô e trem raramente tocam o lote, mas a distância até elas importa).
+async function _itemCamadaProximidade(terrainGeom, wkt, opts) {
+  const {
+    id, titulo, layerName, maxFeatures = 15, bufferMetros = 1000, marginMeters = 500,
+    tipoGeom = 'ponto', // 'ponto' | 'linha'
+    montaLinha, semTexto, widthPx = 1000, heightPx = 750,
+  } = opts;
+  try {
+    let wktBusca = wkt;
+    if (terrainGeom && bufferMetros) {
+      const buffered = turfBuffer(terrainGeom, bufferMetros);
+      wktBusca = geojsonToWKT(buffered) || wkt;
+    }
+    const gj = await fetchWFSByGeom(layerName, wktBusca, maxFeatures);
+    const feats = gj?.features || [];
+    if (feats.length === 0) {
+      return { id, titulo, temInterferencia: false, resumoLinhas: [semTexto], imagem: null };
+    }
+
+    let centroid = null;
+    if (terrainGeom && typeof turf !== 'undefined') {
+      centroid = turf.centroid({ type: 'Feature', geometry: terrainGeom, properties: {} });
+    }
+
+    const comDistancia = feats.map(f => {
+      let dist = null;
+      try {
+        if (centroid) {
+          if (tipoGeom === 'ponto') {
+            dist = turf.distance(centroid, turf.point(f.geometry.coordinates), { units: 'meters' });
+          } else {
+            dist = turf.pointToLineDistance(centroid, f, { units: 'meters' });
+          }
+        }
+      } catch (_) {}
+      return { f, dist };
+    }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
+
+    const linhas = comDistancia.slice(0, 5).map(({ f, dist }) => montaLinha(f, dist));
+    let img = null;
+    try {
+      img = await renderCompositeMapImage({
+        terrainGeom,
+        layers: ['MapaBase_Topografico', layerName.replace('geoportal:', '')],
+        styles: [null, null],
+        marginMeters, widthPx, heightPx,
+      });
+    } catch (e) {
+      console.error(`[PDF][${titulo}] falha ao gerar imagem:`, e);
+      log('warn', `${titulo}: imagem WMS falhou — ${e.message}`);
+    }
+    return { id, titulo, temInterferencia: true, resumoLinhas: linhas, imagem: img };
   } catch (e) {
     return { id, titulo, temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null };
   }
@@ -3971,6 +4050,100 @@ async function analisarBlocoInfraestrutura(terrainGeom, wkt) {
   return results;
 }
 
+// ── Bloco Transporte — Metrô e Trem (Infraestrutura, Projetos e
+// Influência) ──────────────────────────────────────────────────────────
+// Camadas WFS confirmadas: estacao_metro, estacao_metro_projetada,
+// linha_metro, linha_metro_projetada, area_influencia_metro, estacao_trem,
+// estacao_trem_projetada, linha_trem, linha_trem_projetada, ferrovia_mdc,
+// area_influencia_trem. Estações/linhas raramente tocam o lote — por isso
+// usa a busca por proximidade (nearest neighbor a partir do centróide do
+// terreno), num raio de 1000m, em vez de interseção direta. As áreas de
+// influência (polígonos) usam interseção direta normal.
+async function analisarBlocoTransporte(terrainGeom, wkt) {
+  const results = [];
+
+  // Metrô
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'estacao_metro', titulo: 'Transporte — Metrô (Estação)', layerName: 'geoportal:estacao_metro',
+    tipoGeom: 'ponto', bufferMetros: 1000, marginMeters: 600,
+    montaLinha: (f, dist) => { const p = f.properties || {}; return `${p.nm_estacao_metro_trem || '—'} (linha ${p.nm_linha_metro_trem || '—'}) — situação: ${p.tx_situacao_metro_trem || '—'} — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`; },
+    semTexto: 'Nenhuma estação de metrô num raio de 1000m.',
+  }));
+
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'estacao_metro_projetada', titulo: 'Transporte — Metrô Projeto (Estação)', layerName: 'geoportal:estacao_metro_projetada',
+    tipoGeom: 'ponto', bufferMetros: 1000, marginMeters: 600,
+    montaLinha: (f, dist) => { const p = f.properties || {}; return `${p.nm_estacao_metro_trem || '—'} (linha ${p.nm_linha_metro_trem || '—'}) — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`; },
+    semTexto: 'Nenhuma estação de metrô projetada num raio de 1000m.',
+  }));
+
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'linha_metro', titulo: 'Transporte — Metrô (Linha)', layerName: 'geoportal:linha_metro',
+    tipoGeom: 'linha', bufferMetros: 1000, marginMeters: 600,
+    montaLinha: (f, dist) => { const p = f.properties || {}; return `${p.nm_linha_metro_trem || p.nr_nome_linha || '—'} — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`; },
+    semTexto: 'Nenhuma linha de metrô num raio de 1000m.',
+  }));
+
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'linha_metro_projetada', titulo: 'Transporte — Metrô Projeto (Linha)', layerName: 'geoportal:linha_metro_projetada',
+    tipoGeom: 'linha', bufferMetros: 1000, marginMeters: 600,
+    montaLinha: (f, dist) => { const p = f.properties || {}; return `${p.nm_linha_metro_trem || p.nr_nome_linha || '—'} — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`; },
+    semTexto: 'Nenhuma linha de metrô projetada num raio de 1000m.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'area_influencia_metro', titulo: 'Transporte — Metrô (Área de Influência)',
+    layerName: 'geoportal:area_influencia_metro', maxFeatures: 5, marginMeters: 500,
+    montaLinha: f => { const p = f.properties || {}; return `${p.tx_aviso || 'Terreno dentro da área de influência do metrô.'}`; },
+    semTexto: 'Terreno fora da área de influência do metrô.',
+  }));
+
+  // Trem
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'estacao_trem', titulo: 'Transporte — Trem Metropolitano (Estação)', layerName: 'geoportal:estacao_trem',
+    tipoGeom: 'ponto', bufferMetros: 1000, marginMeters: 600,
+    montaLinha: (f, dist) => { const p = f.properties || {}; return `${p.nm_estacao_metro_trem || '—'} (linha ${p.nm_linha_metro_trem || '—'}, ${p.nm_empresa_metro_trem || '—'}) — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`; },
+    semTexto: 'Nenhuma estação de trem num raio de 1000m.',
+  }));
+
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'estacao_trem_projetada', titulo: 'Transporte — Trem Projeto (Estação)', layerName: 'geoportal:estacao_trem_projetada',
+    tipoGeom: 'ponto', bufferMetros: 1000, marginMeters: 600,
+    montaLinha: (f, dist) => { const p = f.properties || {}; return `${p.nm_estacao_metro_trem || '—'} (linha ${p.nm_linha_metro_trem || '—'}) — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`; },
+    semTexto: 'Nenhuma estação de trem projetada num raio de 1000m.',
+  }));
+
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'linha_trem', titulo: 'Transporte — Trem Metropolitano (Linha)', layerName: 'geoportal:linha_trem',
+    tipoGeom: 'linha', bufferMetros: 1000, marginMeters: 600,
+    montaLinha: (f, dist) => { const p = f.properties || {}; return `${p.nm_linha_metro_trem || '—'} (${p.nm_empresa_metro_trem || '—'}) — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`; },
+    semTexto: 'Nenhuma linha de trem num raio de 1000m.',
+  }));
+
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'linha_trem_projetada', titulo: 'Transporte — Trem Projeto (Linha)', layerName: 'geoportal:linha_trem_projetada',
+    tipoGeom: 'linha', bufferMetros: 1000, marginMeters: 600,
+    montaLinha: (f, dist) => { const p = f.properties || {}; return `${p.nm_linha_metro_trem || p.nr_nome_linha || '—'} — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`; },
+    semTexto: 'Nenhuma linha de trem projetada num raio de 1000m.',
+  }));
+
+  results.push(await _itemCamadaProximidade(terrainGeom, wkt, {
+    id: 'ferrovia', titulo: 'Transporte — Ferrovia (MDC)', layerName: 'geoportal:ferrovia_mdc',
+    tipoGeom: 'linha', bufferMetros: 500, marginMeters: 400,
+    montaLinha: (f, dist) => `Ferrovia — a ${dist ? Math.round(dist) + 'm' : '—'} do terreno`,
+    semTexto: 'Nenhuma ferrovia num raio de 500m.',
+  }));
+
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, {
+    id: 'area_influencia_trem', titulo: 'Transporte — Trem (Área de Influência)',
+    layerName: 'geoportal:area_influencia_trem', maxFeatures: 5, marginMeters: 500,
+    montaLinha: f => { const p = f.properties || {}; return `${p.nm_estacao_linha || '—'} — ${p.tx_mensagem || 'Terreno dentro da área de influência do trem.'}`; },
+    semTexto: 'Terreno fora da área de influência do trem.',
+  }));
+
+  return results;
+}
+
 // ── Bloco 3 — Patrimônio Histórico ────────────────────────────────────
 // ZEPEC foi movido para o Bloco 2 (Legislação Urbana), seguindo a nova
 // estrutura do roteiro do usuário — não é mais tratado aqui.
@@ -4530,7 +4703,31 @@ window.exportReportPDF = async function() {
       log('warn', `Bloco de patrimônio histórico do PDF falhou parcialmente: ${e.message}`);
     }
 
-    // ── PARTE 6 — Licenciamento Ambiental (página própria) ─────────────
+    // ── PARTE 6 — Transporte (Metrô e Trem, página própria) ────────────
+    try {
+      const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
+      const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
+
+      if (terrainWKTForPDF) {
+        log('info', 'Relatório PDF: analisando Transporte (Metrô e Trem)...');
+        const blocoTransporte = await analisarBlocoTransporte(terrainGeomForPDF, terrainWKTForPDF);
+
+        const resumoCardTransporte = {
+          titulo: 'Resumo Complementar — Transporte (Metrô e Trem)',
+          resumoLinhas: blocoTransporte.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`),
+          imagem: null,
+        };
+        const cardsParaExibirTransporte = [resumoCardTransporte, ...blocoTransporte.filter(it => it.temInterferencia)];
+
+        pdf.addPage('a4', 'portrait');
+        _addBloco1CardsToPDF(pdf, cardsParaExibirTransporte, now);
+      }
+    } catch (e) {
+      console.error('[PDF][BlocoTransporte]', e);
+      log('warn', `Bloco de transporte do PDF falhou parcialmente: ${e.message}`);
+    }
+
+    // ── PARTE 7 — Licenciamento Ambiental (página própria) ─────────────
     try {
       const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
       const terrainWKTForPDF  = window._kvTerrainWKTForReport || null;
@@ -4554,7 +4751,7 @@ window.exportReportPDF = async function() {
       log('warn', `Bloco de licenciamento ambiental do PDF falhou parcialmente: ${e.message}`);
     }
 
-    // ── PARTE 7 — Infraestrutura Urbana, Meio Físico, Equipamentos e
+    // ── PARTE 8 — Infraestrutura Urbana, Meio Físico, Equipamentos e
     // Verde (página própria) ───────────────────────────────────────────
     try {
       const terrainGeomForPDF = window._kvTerrainGeomForReport || null;
@@ -4598,7 +4795,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V54</span>
+    <span style="color:#00ACCD">V56</span>
   </div>
 </body>
 </html>
