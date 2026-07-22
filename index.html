@@ -4636,6 +4636,113 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
 // interferência ou não. Substitui as seções "Outros itens - Verificar" e
 // "Outras sobreposições - verificar manualmente" do relatório visual —
 // agora com dado real, já que essas camadas passaram a ser analisadas.
+// Varredura COMPLETA de todas as camadas WFS do catálogo do servidor
+// GeoSampa (as mesmas ~474 camadas que a aba ① Varredura mostra), usando
+// o PERÍMETRO EXATO do terreno desenhado — sem buffer/offset — pra
+// checar sobreposição direta. Isso cobre não só as camadas já detalhadas
+// nos blocos do relatório (Cadastro, Legislação, etc.), mas qualquer
+// outra camada do servidor que também toque o terreno. Usado só na
+// geração do PDF — não mexe na aba de Varredura ao vivo, que continua
+// usando buffer configurável normalmente.
+async function _varreduraCompletaParaPDF(terrainWKTExato) {
+  const catalog = await fetchCapabilities();
+  const resultados = [];
+  const probe = async (entry) => {
+    const r = { id: entry.id, label: entry.label, temIncidencia: false, error: null };
+    try {
+      const gj = await fetchWFSByGeom(entry.id, terrainWKTExato, 1);
+      const count = gj?.totalFeatures ?? gj?.numberMatched ?? (gj?.features?.length ?? 0);
+      r.temIncidencia = count > 0 || (gj?.features?.length ?? 0) > 0;
+    } catch (e) {
+      r.error = e.message;
+    }
+    resultados.push(r);
+  };
+  for (let i = 0; i < catalog.length; i += 5) {
+    await Promise.all(catalog.slice(i, i + 5).map(probe));
+  }
+  resultados.sort((a, b) => a.label.localeCompare(b.label));
+  return resultados;
+}
+
+// Desenha a página da varredura completa — lista só as camadas COM
+// incidência (a lista de "sem incidência" ficaria com centenas de linhas
+// e não agrega valor prático; a contagem delas aparece só como resumo).
+function _addVarreduraCompletaPDF(pdf, resultados, generatedAt) {
+  const pageW = 210, pageH = 297, marginX = 12, marginTop = 14, marginBottom = 14;
+  const contentW = pageW - marginX * 2;
+  let cursorY = marginTop;
+
+  function drawHeader() {
+    pdf.setFontSize(8); pdf.setTextColor(140, 140, 140);
+    pdf.text('KV Arquitetos · Varredura Completa de Camadas do Servidor', marginX, 8);
+    pdf.text(generatedAt, pageW - marginX, 8, { align: 'right' });
+    pdf.setDrawColor(0, 172, 205); pdf.setLineWidth(0.4);
+    pdf.line(marginX, 10, pageW - marginX, 10);
+  }
+  function newPage() {
+    pdf.addPage('a4', 'portrait');
+    cursorY = marginTop;
+    drawHeader();
+  }
+  function ensureSpace(h) {
+    if (cursorY + h > pageH - marginBottom) newPage();
+  }
+
+  pdf.addPage('a4', 'portrait');
+  cursorY = marginTop;
+  drawHeader();
+
+  pdf.setFontSize(13); pdf.setFont(undefined, 'bold'); pdf.setTextColor(20, 20, 20);
+  pdf.text('Varredura Completa — Todas as Camadas Incidentes no Terreno', marginX, cursorY + 5);
+  pdf.setFont(undefined, 'normal');
+  cursorY += 9;
+
+  const comIncidencia = resultados.filter(r => r.temIncidencia);
+  const comErro = resultados.filter(r => r.error);
+  const total = resultados.length;
+
+  pdf.setFontSize(8.3); pdf.setTextColor(150, 90, 10);
+  const nota = _safeWrap(pdf,
+    `Nota: esta lista usa o PERÍMETRO EXATO do terreno desenhado (sem buffer/offset de segurança) para checar sobreposição geométrica direta com cada uma das ${total} camadas disponíveis no servidor WFS do GeoSampa no momento da geração. Inclui tanto as camadas já detalhadas nas páginas seguintes deste relatório quanto qualquer outra camada do servidor que também encoste no terreno. Uma camada não listada aqui significa que sua geometria não toca o polígono exato do terreno (mesmo que estivesse nas proximidades).`,
+    contentW);
+  pdf.text(nota, marginX, cursorY + 3);
+  cursorY += nota.length * 3.6 + 7;
+
+  ensureSpace(7);
+  pdf.setFontSize(10); pdf.setFont(undefined, 'bold'); pdf.setTextColor(180, 90, 10);
+  pdf.text(`${comIncidencia.length} camada(s) com incidência direta no terreno (de ${total} consultadas):`, marginX, cursorY + 4);
+  pdf.setFont(undefined, 'normal');
+  cursorY += 8;
+
+  const rowH = 5.2;
+  comIncidencia.forEach((r, idx) => {
+    const nomeWrapped = _safeWrap(pdf, `${r.label}  ·  ${r.id}`, contentW - 4);
+    const thisRowH = Math.max(rowH, nomeWrapped.length * 3.6 + 1.6);
+    ensureSpace(thisRowH);
+    pdf.setFillColor(idx % 2 === 0 ? 253 : 255, idx % 2 === 0 ? 246 : 255, idx % 2 === 0 ? 231 : 255);
+    pdf.rect(marginX, cursorY, contentW, thisRowH, 'F');
+    pdf.setFontSize(8.2); pdf.setTextColor(120, 60, 0);
+    pdf.text(nomeWrapped, marginX + 2, cursorY + 3.5);
+    cursorY += thisRowH;
+  });
+
+  cursorY += 5;
+  ensureSpace(9);
+  pdf.setFontSize(8.5); pdf.setTextColor(100, 100, 100);
+  const semIncidenciaCount = total - comIncidencia.length - comErro.length;
+  pdf.text(`${semIncidenciaCount} camada(s) consultada(s) sem incidência (geometria não toca o terreno exato).`, marginX, cursorY + 3);
+  cursorY += 5;
+
+  if (comErro.length > 0) {
+    ensureSpace(7);
+    pdf.setFontSize(8.3); pdf.setTextColor(180, 40, 40);
+    const errWrapped = _safeWrap(pdf, `${comErro.length} camada(s) não puderam ser consultadas (erro de rede/timeout no momento da geração) — não estão refletidas nas contagens acima como "sem incidência", pois não sabemos de verdade.`, contentW);
+    pdf.text(errWrapped, marginX, cursorY + 3);
+    cursorY += errWrapped.length * 3.6 + 3;
+  }
+}
+
 function _addResumoTodasCamadas(pdf, blocos, generatedAt) {
   const pageW = 210, pageH = 297, marginX = 12, marginTop = 14, marginBottom = 14;
   const contentW = pageW - marginX * 2;
@@ -4886,9 +4993,22 @@ window.exportReportPDF = async function() {
     }
 
     // ── PARTE 1 — Resumo (cópia fiel do relatório visual já exibido no
-    // painel do app) + lista-resumo de todas as camadas analisadas ─────
+    // painel do app) + varredura completa do servidor + lista-resumo das
+    // 62 camadas já analisadas nos blocos ──────────────────────────────
     const reportContentEl = document.getElementById('reportContent');
     _renderVisualReportAsText(pdf, reportContentEl, now);
+
+    if (terrainWKTForPDF) {
+      try {
+        log('info', 'Relatório PDF: varredura completa de todas as camadas do servidor (perímetro exato)...');
+        const varreduraCompleta = await _varreduraCompletaParaPDF(terrainWKTForPDF);
+        _addVarreduraCompletaPDF(pdf, varreduraCompleta, now);
+        log('ok', `Varredura completa: ${varreduraCompleta.filter(r => r.temIncidencia).length} de ${varreduraCompleta.length} camadas com incidência.`);
+      } catch (e) {
+        console.error('[PDF][VarreduraCompleta]', e);
+        log('warn', `Varredura completa do PDF falhou: ${e.message}`);
+      }
+    }
 
     _addResumoTodasCamadas(pdf, {
       bloco1, blocoViario, bloco2, bloco3, blocoTransporte, blocoAmbiental, blocoInfra, blocoGeometria,
@@ -5014,7 +5134,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V58</span>
+    <span style="color:#00ACCD">V62</span>
   </div>
 </body>
 </html>
