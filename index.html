@@ -811,7 +811,7 @@ function buildProxiedUrl(wfsUrl, base) {
 // ══════════════════════════════════════════════════════════════════
 // WFS FETCH
 // ══════════════════════════════════════════════════════════════════
-function buildWFSUrl(typeId, bbox, maxFeatures) {
+function buildWFSUrl(typeId, bbox, maxFeatures, startIndex) {
   const { minX, minY, maxX, maxY } = bbox;
   const p = new URLSearchParams({
     service:'WFS', version:'1.1.0', request:'GetFeature',
@@ -819,11 +819,12 @@ function buildWFSUrl(typeId, bbox, maxFeatures) {
     maxFeatures:String(maxFeatures), srsName:'EPSG:4326',
     bbox:`${minX},${minY},${maxX},${maxY},EPSG:4326`,
   });
+  if (startIndex) p.set('startIndex', String(startIndex));
   return `${WFS_BASE}?${p}`;
 }
 
-async function fetchWFS(typeId, bbox, maxFeatures, timeoutMs) {
-  const wfsUrl  = buildWFSUrl(typeId, bbox, maxFeatures);
+async function fetchWFS(typeId, bbox, maxFeatures, timeoutMs, startIndex) {
+  const wfsUrl  = buildWFSUrl(typeId, bbox, maxFeatures, startIndex);
   const fetchUrl = buildProxiedUrl(wfsUrl);
 
   if (!proxyUrl) {
@@ -1182,10 +1183,28 @@ window.runImport=async function(){
   for(const layer of toImport){
     setIS(layer.id,'running','buscando...');
     try{
-      const gj = importWKT
-        ? await fetchWFSByGeom(layer.id, importWKT, layer.maxF||200)
-        : await fetchWFS(layer.id, importBBox, layer.maxF||200, layer.heavyGeom?55000:25000);
-      const features=gj.features??[];
+      let features, truncadoInfo = null;
+      if (layer.heavyGeom) {
+        // Camadas de geometria muito pesada (ex: Área de Influência Metrô/Trem)
+        // mantêm o limite baixo intencional, sem paginar — geometria grande
+        // demais pra buscar em lote.
+        const gj = importWKT
+          ? await fetchWFSByGeom(layer.id, importWKT, layer.maxF||3)
+          : await fetchWFS(layer.id, importBBox, layer.maxF||3, 55000);
+        features = gj.features ?? [];
+      } else {
+        // Demais camadas: pagina de verdade (startIndex) até trazer tudo —
+        // corrige o truncamento silencioso em ~200 feições que camadas
+        // densas (ex: lote_cidadao) sofriam antes.
+        const resultado = importWKT
+          ? await fetchWFSByGeomPaginado(layer.id, importWKT, 500)
+          : await fetchWFSPaginado(layer.id, importBBox, 25000, 500);
+        features = resultado.features;
+        truncadoInfo = resultado.truncado ? resultado : null;
+      }
+      if (truncadoInfo) {
+        log('warn', `${layer.label}: ainda truncado em ${features.length} de ${truncadoInfo.totalFeatures} feições — camada muito densa para o limite de segurança de páginas (20 páginas de 500).`);
+      }
       if(!features.length){setIS(layer.id,'done','0 feições');log('warn',`${layer.label}: vazio no BBOX`);}
       else{
         const name=`GeoSampa · ${layer.label}`;
@@ -1742,13 +1761,14 @@ function _guessGeomCols(typeId) {
 }
 
 // ── Tentativa única com uma coluna geométrica específica ─────────────────
-async function _fetchWFSWithCol(typeId, wkt, maxFeatures, geomCol) {
+async function _fetchWFSWithCol(typeId, wkt, maxFeatures, geomCol, startIndex) {
   const p = new URLSearchParams({
     service:'WFS', version:'1.1.0', request:'GetFeature',
     typeName:typeId, outputFormat:'application/json',
     maxFeatures:String(maxFeatures), srsName:'EPSG:4326',
     CQL_FILTER:`INTERSECTS(${geomCol},${wkt})`,
   });
+  if (startIndex) p.set('startIndex', String(startIndex));
   const raw = `${WFS_BASE}?${p}`;
   let res;
   try {
@@ -1774,10 +1794,10 @@ async function _fetchWFSWithCol(typeId, wkt, maxFeatures, geomCol) {
 
 // ── Busca WFS com INTERSECTS, tentando as colunas geométricas em sequência
 // Caches o nome da coluna que funcionou para evitar re-tentativas na sessão.
-async function fetchWFSByGeom(typeId, wkt, maxFeatures) {
+async function fetchWFSByGeom(typeId, wkt, maxFeatures, startIndex) {
   // Se já sabemos qual coluna funciona, vai direto
   if (_geomColCache[typeId]) {
-    return _fetchWFSWithCol(typeId, wkt, maxFeatures, _geomColCache[typeId]);
+    return _fetchWFSWithCol(typeId, wkt, maxFeatures, _geomColCache[typeId], startIndex);
   }
 
   const cols = _guessGeomCols(typeId);
@@ -1785,7 +1805,7 @@ async function fetchWFSByGeom(typeId, wkt, maxFeatures) {
 
   for (const col of cols) {
     try {
-      const result = await _fetchWFSWithCol(typeId, wkt, maxFeatures, col);
+      const result = await _fetchWFSWithCol(typeId, wkt, maxFeatures, col, startIndex);
       _geomColCache[typeId] = col; // cacheia para próximas chamadas
       return result;
     } catch(e) {
@@ -1802,6 +1822,53 @@ async function fetchWFSByGeom(typeId, wkt, maxFeatures) {
     new Error('Sem dados WFS (raster ou coluna geométrica não identificada)'),
     { _kind:'nowfs' }
   );
+}
+
+// Busca TODAS as feições que intersectam, paginando com startIndex quando
+// o total ultrapassa o tamanho de página (o servidor não pagina sozinho —
+// maxFeatures é um limite duro por requisição, e sem isso a importação de
+// camadas densas como lote_cidadao ficava truncada silenciosamente nas
+// primeiras N feições que o GeoServer retornasse, sem garantia de
+// proximidade ao terreno). Trava de segurança em 20 páginas (padrão) para
+// não entrar em loop infinito com uma camada patológica.
+async function fetchWFSByGeomPaginado(typeId, wkt, tamanhoPagina = 500, maxPaginas = 20) {
+  let todasFeatures = [];
+  let startIndex = 0;
+  let totalDeclarado = null;
+  for (let pagina = 0; pagina < maxPaginas; pagina++) {
+    const gj = await fetchWFSByGeom(typeId, wkt, tamanhoPagina, startIndex);
+    const feats = gj?.features || [];
+    todasFeatures = todasFeatures.concat(feats);
+    if (totalDeclarado === null) totalDeclarado = gj?.totalFeatures ?? gj?.numberMatched ?? null;
+    if (feats.length < tamanhoPagina) break; // última página (veio menos que o pedido)
+    startIndex += tamanhoPagina;
+  }
+  return {
+    features: todasFeatures,
+    totalFeatures: totalDeclarado,
+    truncado: totalDeclarado != null && todasFeatures.length < totalDeclarado,
+  };
+}
+
+// Mesma lógica de paginação, para o caminho por BBOX (usado quando não há
+// polígono de terreno desenhado, só um retângulo).
+async function fetchWFSPaginado(typeId, bbox, timeoutMs, tamanhoPagina = 500, maxPaginas = 20) {
+  let todasFeatures = [];
+  let startIndex = 0;
+  let totalDeclarado = null;
+  for (let pagina = 0; pagina < maxPaginas; pagina++) {
+    const gj = await fetchWFS(typeId, bbox, tamanhoPagina, timeoutMs, startIndex);
+    const feats = gj?.features || [];
+    todasFeatures = todasFeatures.concat(feats);
+    if (totalDeclarado === null) totalDeclarado = gj?.totalFeatures ?? gj?.numberMatched ?? null;
+    if (feats.length < tamanhoPagina) break;
+    startIndex += tamanhoPagina;
+  }
+  return {
+    features: todasFeatures,
+    totalFeatures: totalDeclarado,
+    truncado: totalDeclarado != null && todasFeatures.length < totalDeclarado,
+  };
 }
 
 function setReportStatus(state, msg) {
@@ -4636,6 +4703,113 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
 // interferência ou não. Substitui as seções "Outros itens - Verificar" e
 // "Outras sobreposições - verificar manualmente" do relatório visual —
 // agora com dado real, já que essas camadas passaram a ser analisadas.
+// Varredura COMPLETA de todas as camadas WFS do catálogo do servidor
+// GeoSampa (as mesmas ~474 camadas que a aba ① Varredura mostra), usando
+// o PERÍMETRO EXATO do terreno desenhado — sem buffer/offset — pra
+// checar sobreposição direta. Isso cobre não só as camadas já detalhadas
+// nos blocos do relatório (Cadastro, Legislação, etc.), mas qualquer
+// outra camada do servidor que também toque o terreno. Usado só na
+// geração do PDF — não mexe na aba de Varredura ao vivo, que continua
+// usando buffer configurável normalmente.
+async function _varreduraCompletaParaPDF(terrainWKTExato) {
+  const catalog = await fetchCapabilities();
+  const resultados = [];
+  const probe = async (entry) => {
+    const r = { id: entry.id, label: entry.label, temIncidencia: false, error: null };
+    try {
+      const gj = await fetchWFSByGeom(entry.id, terrainWKTExato, 1);
+      const count = gj?.totalFeatures ?? gj?.numberMatched ?? (gj?.features?.length ?? 0);
+      r.temIncidencia = count > 0 || (gj?.features?.length ?? 0) > 0;
+    } catch (e) {
+      r.error = e.message;
+    }
+    resultados.push(r);
+  };
+  for (let i = 0; i < catalog.length; i += 5) {
+    await Promise.all(catalog.slice(i, i + 5).map(probe));
+  }
+  resultados.sort((a, b) => a.label.localeCompare(b.label));
+  return resultados;
+}
+
+// Desenha a página da varredura completa — lista só as camadas COM
+// incidência (a lista de "sem incidência" ficaria com centenas de linhas
+// e não agrega valor prático; a contagem delas aparece só como resumo).
+function _addVarreduraCompletaPDF(pdf, resultados, generatedAt) {
+  const pageW = 210, pageH = 297, marginX = 12, marginTop = 14, marginBottom = 14;
+  const contentW = pageW - marginX * 2;
+  let cursorY = marginTop;
+
+  function drawHeader() {
+    pdf.setFontSize(8); pdf.setTextColor(140, 140, 140);
+    pdf.text('KV Arquitetos · Varredura Completa de Camadas do Servidor', marginX, 8);
+    pdf.text(generatedAt, pageW - marginX, 8, { align: 'right' });
+    pdf.setDrawColor(0, 172, 205); pdf.setLineWidth(0.4);
+    pdf.line(marginX, 10, pageW - marginX, 10);
+  }
+  function newPage() {
+    pdf.addPage('a4', 'portrait');
+    cursorY = marginTop;
+    drawHeader();
+  }
+  function ensureSpace(h) {
+    if (cursorY + h > pageH - marginBottom) newPage();
+  }
+
+  pdf.addPage('a4', 'portrait');
+  cursorY = marginTop;
+  drawHeader();
+
+  pdf.setFontSize(13); pdf.setFont(undefined, 'bold'); pdf.setTextColor(20, 20, 20);
+  pdf.text('Varredura Completa — Todas as Camadas Incidentes no Terreno', marginX, cursorY + 5);
+  pdf.setFont(undefined, 'normal');
+  cursorY += 9;
+
+  const comIncidencia = resultados.filter(r => r.temIncidencia);
+  const comErro = resultados.filter(r => r.error);
+  const total = resultados.length;
+
+  pdf.setFontSize(8.3); pdf.setTextColor(150, 90, 10);
+  const nota = _safeWrap(pdf,
+    `Nota: esta lista usa o PERÍMETRO EXATO do terreno desenhado (sem buffer/offset de segurança) para checar sobreposição geométrica direta com cada uma das ${total} camadas disponíveis no servidor WFS do GeoSampa no momento da geração. Inclui tanto as camadas já detalhadas nas páginas seguintes deste relatório quanto qualquer outra camada do servidor que também encoste no terreno. Uma camada não listada aqui significa que sua geometria não toca o polígono exato do terreno (mesmo que estivesse nas proximidades).`,
+    contentW);
+  pdf.text(nota, marginX, cursorY + 3);
+  cursorY += nota.length * 3.6 + 7;
+
+  ensureSpace(7);
+  pdf.setFontSize(10); pdf.setFont(undefined, 'bold'); pdf.setTextColor(180, 90, 10);
+  pdf.text(`${comIncidencia.length} camada(s) com incidência direta no terreno (de ${total} consultadas):`, marginX, cursorY + 4);
+  pdf.setFont(undefined, 'normal');
+  cursorY += 8;
+
+  const rowH = 5.2;
+  comIncidencia.forEach((r, idx) => {
+    const nomeWrapped = _safeWrap(pdf, `${r.label}  ·  ${r.id}`, contentW - 4);
+    const thisRowH = Math.max(rowH, nomeWrapped.length * 3.6 + 1.6);
+    ensureSpace(thisRowH);
+    pdf.setFillColor(idx % 2 === 0 ? 253 : 255, idx % 2 === 0 ? 246 : 255, idx % 2 === 0 ? 231 : 255);
+    pdf.rect(marginX, cursorY, contentW, thisRowH, 'F');
+    pdf.setFontSize(8.2); pdf.setTextColor(120, 60, 0);
+    pdf.text(nomeWrapped, marginX + 2, cursorY + 3.5);
+    cursorY += thisRowH;
+  });
+
+  cursorY += 5;
+  ensureSpace(9);
+  pdf.setFontSize(8.5); pdf.setTextColor(100, 100, 100);
+  const semIncidenciaCount = total - comIncidencia.length - comErro.length;
+  pdf.text(`${semIncidenciaCount} camada(s) consultada(s) sem incidência (geometria não toca o terreno exato).`, marginX, cursorY + 3);
+  cursorY += 5;
+
+  if (comErro.length > 0) {
+    ensureSpace(7);
+    pdf.setFontSize(8.3); pdf.setTextColor(180, 40, 40);
+    const errWrapped = _safeWrap(pdf, `${comErro.length} camada(s) não puderam ser consultadas (erro de rede/timeout no momento da geração) — não estão refletidas nas contagens acima como "sem incidência", pois não sabemos de verdade.`, contentW);
+    pdf.text(errWrapped, marginX, cursorY + 3);
+    cursorY += errWrapped.length * 3.6 + 3;
+  }
+}
+
 function _addResumoTodasCamadas(pdf, blocos, generatedAt) {
   const pageW = 210, pageH = 297, marginX = 12, marginTop = 14, marginBottom = 14;
   const contentW = pageW - marginX * 2;
@@ -4886,9 +5060,22 @@ window.exportReportPDF = async function() {
     }
 
     // ── PARTE 1 — Resumo (cópia fiel do relatório visual já exibido no
-    // painel do app) + lista-resumo de todas as camadas analisadas ─────
+    // painel do app) + varredura completa do servidor + lista-resumo das
+    // 62 camadas já analisadas nos blocos ──────────────────────────────
     const reportContentEl = document.getElementById('reportContent');
     _renderVisualReportAsText(pdf, reportContentEl, now);
+
+    if (terrainWKTForPDF) {
+      try {
+        log('info', 'Relatório PDF: varredura completa de todas as camadas do servidor (perímetro exato)...');
+        const varreduraCompleta = await _varreduraCompletaParaPDF(terrainWKTForPDF);
+        _addVarreduraCompletaPDF(pdf, varreduraCompleta, now);
+        log('ok', `Varredura completa: ${varreduraCompleta.filter(r => r.temIncidencia).length} de ${varreduraCompleta.length} camadas com incidência.`);
+      } catch (e) {
+        console.error('[PDF][VarreduraCompleta]', e);
+        log('warn', `Varredura completa do PDF falhou: ${e.message}`);
+      }
+    }
 
     _addResumoTodasCamadas(pdf, {
       bloco1, blocoViario, bloco2, bloco3, blocoTransporte, blocoAmbiental, blocoInfra, blocoGeometria,
@@ -5014,7 +5201,7 @@ window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#333;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
     <span>GEOSAMPA IMPORT · WFS MULTI-CAMADAS</span>
-    <span style="color:#00ACCD">V58</span>
+    <span style="color:#00ACCD">V63</span>
   </div>
 </body>
 </html>
