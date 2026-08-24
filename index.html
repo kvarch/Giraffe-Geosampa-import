@@ -3004,10 +3004,54 @@ function _drawGeomOnCanvas(ctx, geometry, bbox3857, w, h, style) {
   else if (t === 'MultiPolygon') geometry.coordinates.forEach(poly => poly.forEach(drawRing));
 }
 
-// Gera uma imagem (JPEG dataURL) combinando 1+ camadas WMS reais numa
-// única chamada GetMap (ex: mapa base + lote_cidadao com rótulos nativos
-// F_XXXX/N.XXX/área/dimensões, exatamente como no portal GeoSampa),
-// e sobrepõe o contorno do terreno em vermelho por cima.
+// SLD inline neutro para a quadra fiscal usada como camada de contexto
+// no lugar do mapa topográfico (bege #F2ECDD, contorno #D8CBAA, sem
+// rótulo de texto) — dá contexto de tecido urbano sem poluir com curvas
+// de nível nem código de quadra.
+const SLD_QUADRA_NEUTRA = `<?xml version="1.0" encoding="UTF-8"?>
+<StyledLayerDescriptor version="1.0.0" xmlns="http://www.opengis.net/sld" xmlns:ogc="http://www.opengis.net/ogc" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/sld http://schemas.opengis.net/sld/1.0.0/StyledLayerDescriptor.xsd">
+  <NamedLayer>
+    <Name>quadra_fiscal</Name>
+    <UserStyle>
+      <Title>Quadra Neutra KV</Title>
+      <FeatureTypeStyle>
+        <Rule>
+          <PolygonSymbolizer>
+            <Fill><CssParameter name="fill">#F2ECDD</CssParameter></Fill>
+            <Stroke><CssParameter name="stroke">#D8CBAA</CssParameter><CssParameter name="stroke-width">0.6</CssParameter></Stroke>
+          </PolygonSymbolizer>
+        </Rule>
+      </FeatureTypeStyle>
+    </UserStyle>
+  </NamedLayer>
+</StyledLayerDescriptor>`;
+
+// Carrega uma imagem com timeout explícito e uma retentativa automática
+// (GeoSampa é servidor público, carga variável — timeout/falha
+// transitória é comum quando o relatório faz muitas chamadas em sequência).
+function _loadImageWithRetry(url, attempts = 2, timeoutMs = 20000) {
+  function attempt(n) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      const timer = setTimeout(() => { img.src = ''; reject(new Error('timeout')); }, timeoutMs);
+      img.onload = () => { clearTimeout(timer); resolve(img); };
+      img.onerror = () => { clearTimeout(timer); reject(new Error('erro ao carregar')); };
+      img.src = url;
+    }).catch(e => (n < attempts ? attempt(n + 1) : Promise.reject(e)));
+  }
+  return attempt(1);
+}
+
+// Gera uma imagem (JPEG dataURL) combinando 1+ camadas WMS reais, CADA
+// UMA BUSCADA EM CHAMADA GetMap SEPARADA (base opaca em JPEG, demais em
+// PNG transparente, compositadas no canvas em sequência) — isola falhas,
+// uma camada ruim não derruba as outras, e permite estilo customizado
+// por camada (sld_body). A base padrão troca automaticamente
+// MapaBase_Topografico por MapaBase_Politico + quadra_fiscal com um SLD
+// neutro (sem rótulo/curva de nível) — pula o quadra_fiscal extra se a
+// própria chamada já usa quadra_fiscal/lote_cidadao como camada temática.
+// Sobrepõe o contorno do terreno em vermelho por cima de tudo.
 // Retorna { dataUrl, width, height } ou null se não houver geometria.
 async function renderCompositeMapImage(opts) {
   const {
@@ -3044,48 +3088,65 @@ async function renderCompositeMapImage(opts) {
   // "_cb" (cache-bust): o worker cacheia por 7 dias qualquer resposta de
   // GetMap usando a URL inteira como chave. Como as imagens do relatório
   // são geradas do zero a cada exportação, sempre buscamos uma versão nova.
-  function buildGetMapUrl(layersArr, stylesArr) {
-    const layersParam = layersArr.map(encodeURIComponent).join(',');
-    const stylesParam = layersArr.map((_, i) => stylesArr[i] ? encodeURIComponent(stylesArr[i]) : '').join(',');
-    return `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetMap`
-      + `&layers=${layersParam}&styles=${stylesParam}&srs=EPSG:3857`
-      + `&width=${widthPx}&height=${heightPx}&format=image/jpeg`
+  function buildGetMapUrl(layerName, styleName, format, sldBody) {
+    let url = `${WMS_BASE_RASTER}?service=WMS&version=1.1.1&request=GetMap`
+      + `&layers=${encodeURIComponent(layerName)}&styles=${styleName ? encodeURIComponent(styleName) : ''}`
+      + `&srs=EPSG:3857&width=${widthPx}&height=${heightPx}&format=${format}`
+      + `&transparent=${format === 'image/png' ? 'true' : 'false'}`
       + `&bbox=${bbox3857.minX},${bbox3857.minY},${bbox3857.maxX},${bbox3857.maxY}`
       + `&_cb=${Date.now()}`;
+    if (sldBody) url += `&sld_body=${encodeURIComponent(sldBody)}`;
+    return url;
   }
 
   const canvas = document.createElement('canvas');
   canvas.width = widthPx; canvas.height = heightPx;
   const ctx = canvas.getContext('2d');
 
-  let bgOk = false;
-  try {
-    const img = await loadImageCORS(buildProxiedWMS(buildGetMapUrl(layers, styles)));
-    ctx.drawImage(img, 0, 0, widthPx, heightPx);
-    bgOk = !_isCanvasBlank(ctx, widthPx, heightPx);
-  } catch (e) {
-    console.warn('[WMS] falha na chamada combinada:', e);
-  }
+  const wantsPoliticalBase = layers[0] === 'MapaBase_Topografico' || layers[0] === 'MapaBase_Politico';
+  const restLayers = wantsPoliticalBase ? layers.slice(1) : layers.slice(0);
+  const restStyles = wantsPoliticalBase ? styles.slice(1) : styles.slice(0);
+  const jaTemQuadraOuLote = restLayers.some(l => l === 'quadra_fiscal' || l === 'lote_cidadao');
 
-  if (!bgOk && layers.length > 1) {
-    // Uma camada combinada às vezes trava a renderização no servidor (comum
-    // quando uma delas tem rótulos densos, tipo lote_cidadao) — o GeoServer
-    // devolve HTTP 200 com imagem em branco em vez de erro de verdade.
-    // Tenta de novo só com a primeira camada (normalmente o mapa base).
+  const fetchList = [];
+  if (wantsPoliticalBase) {
+    fetchList.push({ layer: 'MapaBase_Politico', style: null, format: 'image/jpeg', sld: null, opaque: true });
+    if (!jaTemQuadraOuLote) {
+      fetchList.push({ layer: 'quadra_fiscal', style: null, format: 'image/png', sld: SLD_QUADRA_NEUTRA, opaque: false });
+    }
+  }
+  restLayers.forEach((l, i) => {
+    fetchList.push({ layer: l, style: restStyles[i] || null, format: 'image/png', sld: null, opaque: false });
+  });
+
+  let baseOk = !wantsPoliticalBase; // se não pediu base política, nada bloqueia o fallback
+  for (const item of fetchList) {
     try {
-      ctx.clearRect(0, 0, widthPx, heightPx);
-      const img2 = await loadImageCORS(buildProxiedWMS(buildGetMapUrl([layers[0]], [styles[0]])));
-      ctx.drawImage(img2, 0, 0, widthPx, heightPx);
-      bgOk = !_isCanvasBlank(ctx, widthPx, heightPx);
-      if (bgOk) {
-        log('warn', `Camada "${layers[1]}" veio em branco no servidor (comum com áreas muito densas de rótulos) — mostrando só o mapa base.`);
+      const url = buildProxiedWMS(buildGetMapUrl(item.layer, item.style, item.format, item.sld));
+      const img = await _loadImageWithRetry(url);
+      if (item.opaque) {
+        // Testa em canvas isolado se a base veio em branco (comum sob carga
+        // no GeoServer: HTTP 200 com imagem vazia em vez de erro de verdade).
+        const testCanvas = document.createElement('canvas');
+        testCanvas.width = widthPx; testCanvas.height = heightPx;
+        const testCtx = testCanvas.getContext('2d');
+        testCtx.drawImage(img, 0, 0, widthPx, heightPx);
+        if (_isCanvasBlank(testCtx, widthPx, heightPx)) {
+          console.warn(`[WMS] camada base "${item.layer}" veio em branco — pulando.`);
+          continue;
+        }
+        baseOk = true;
       }
+      ctx.drawImage(img, 0, 0, widthPx, heightPx);
     } catch (e) {
-      console.warn('[WMS] falha no fallback (só mapa base):', e);
+      console.warn(`[WMS] falha na camada "${item.layer}":`, e);
+      if (item.opaque) {
+        log('warn', `Camada base "${item.layer}" falhou ao carregar — imagem pode ficar incompleta.`);
+      }
     }
   }
 
-  if (!bgOk) {
+  if (!baseOk) {
     ctx.fillStyle = '#e8e8e8'; ctx.fillRect(0, 0, widthPx, heightPx);
     ctx.fillStyle = '#888'; ctx.font = '16px sans-serif';
     ctx.fillText('Fundo WMS indisponível no momento da geração', 20, 30);
@@ -4212,7 +4273,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V68 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V69 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
