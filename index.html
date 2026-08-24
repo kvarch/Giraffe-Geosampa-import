@@ -2081,7 +2081,14 @@ async function _runReport(features) {
     : (id, mf) => fetchWFS(id, expandBBOX(currentBBOX, 5), mf);
 
   try {
-    const [gjZone,gjOU,gjEixo,gjTombado,gjManG,gjManB,gjRisco,gjInund,gjZEIS] = await Promise.all([
+    const [gjZone,gjOU,gjEixo,gjTombado,gjManG,gjManB,gjRisco,gjInund,gjZEIS,
+           gjAcervoTombado,gjBairroAmbiental,gjCondephaat,gjIphan,gjCIT,
+           gjZEPEC,gjMacroarea,gjMacrozona,gjAIU,gjVila,gjCTLU,gjDUP,gjVertical,
+           gjPdeViario,gjPdePontual,gjPdeDrenLin,gjPdeDrenPto,
+           gjLinhaAT,gjTorreAT,gjMelhoramento,gjFaixaNE,gjSoloMole,gjCartaGeo,
+           gjCobertura,gjDrenagem,gjContaminadaSigac,gjContaminadaSvma,gjHeliponto,
+           gjMetroLinha,gjMetroArea,gjTremLinha,gjTremArea,
+           gjMancha5,gjMancha25,gjMancha100,gjLoteLogr] = await Promise.all([
       fetch('geoportal:zoneamento_2016_map1', 10).catch(()=>null),
       fetch('geoportal:operacao_urbana', 5).catch(()=>null),
       fetch('geoportal:eixo_ativado_decreto', 5).catch(()=>null),
@@ -2091,6 +2098,43 @@ async function _runReport(features) {
       fetch('geoportal:area_risco_geologico', 5).catch(()=>null),
       fetch('geoportal:area_inundavel', 5).catch(()=>null),
       fetch('geoportal:patrimonio_cultural_area_envoltoria_CONPRESP', 5).catch(()=>null),
+      // novos — checklist completo
+      fetch('geoportal:patrimonio_cultural_acervo_tombado', 3).catch(()=>null),
+      fetch('geoportal:patrimonio_cultural_bairro_ambiental', 3).catch(()=>null),
+      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONDEPHAAT', 3).catch(()=>null),
+      fetch('geoportal:patrimonio_cultural_area_envoltoria_IPHAN', 3).catch(()=>null),
+      fetch('geoportal:cit_cidadao', 3).catch(()=>null),
+      fetch('geoportal:perimetro_zepec', 3).catch(()=>null),
+      fetch('geoportal:pde_macroarea_lei_18209', 3).catch(()=>null),
+      fetch('geoportal:pde2014_v_mcrz_01_map', 3).catch(()=>null),
+      fetch('geoportal:aiu_perimetro_pinheiros', 3).catch(()=>null),
+      fetch('geoportal:enquadramento_vila', 3).catch(()=>null),
+      fetch('geoportal:deliberacao_ctlu', 3).catch(()=>null),
+      fetch('geoportal:planta_dup_dis_pd', 3).catch(()=>null),
+      fetch('geoportal:edificacao', 3).catch(()=>null),
+      fetch('geoportal:pde_viario_estrutural', 3).catch(()=>null),
+      fetch('geoportal:pde_intervencao_pontual_melhoramento_viario', 3).catch(()=>null),
+      fetch('geoportal:pde_drenagem_acao_prioritaria_linear', 3).catch(()=>null),
+      fetch('geoportal:pde_drenagem_acao_prioritaria_pontual', 3).catch(()=>null),
+      fetch('geoportal:linha_alta_tensao', 3).catch(()=>null),
+      fetch('geoportal:torre_alta_tensao', 3).catch(()=>null),
+      fetch('geoportal:geoconvias_lei_melhoramento_vigente', 3).catch(()=>null),
+      fetch('geoportal:geoconvias_faixa_nao_edificavel', 3).catch(()=>null),
+      fetch('geoportal:solo_mole', 3).catch(()=>null),
+      fetch('geoportal:carta_geotecnica', 3).catch(()=>null),
+      fetch('geoportal:cobertura_vegetal', 3).catch(()=>null),
+      fetch('geoportal:drenagem', 3).catch(()=>null),
+      fetch('geoportal:GEOSAMPA_area_contaminada_sigac', 3).catch(()=>null),
+      fetch('geoportal:area_contaminada_reabilitada_svma', 3).catch(()=>null),
+      fetch('geoportal:GEOSAMPA_heliponto', 3).catch(()=>null),
+      fetch('geoportal:linha_metro', 3).catch(()=>null),
+      fetch('geoportal:area_influencia_metro', 3).catch(()=>null),
+      fetch('geoportal:linha_trem', 3).catch(()=>null),
+      fetch('geoportal:area_influencia_trem', 3).catch(()=>null),
+      fetch('geoportal:mancha_inundacao_5', 3).catch(()=>null),
+      fetch('geoportal:mancha_inundacao_25', 3).catch(()=>null),
+      fetch('geoportal:mancha_inundacao_100', 3).catch(()=>null),
+      fetch('geoportal:segmento_logradouro', 3).catch(()=>null),
     ]);
 
     const zones    = (gjZone?.features||[]).map(f=>f.properties);
@@ -2512,20 +2556,99 @@ async function _runReport(features) {
           </div>`;
         }
 
-        // ── 9. Verificações Adicionais (checklist KV) ─
-        html += `<div class="report-section">
-          <div class="report-section-title">Outros Itens — Verificar</div>
-          <table class="report-table">
-            <tr><td>ZEPEC / Bens Tombados</td><td><span class="report-val-warn">Verificar CIT + GeoSampa</span></td></tr>
-            <tr><td>Utilidade Pública (DUP)</td><td><span class="report-val-warn">Verificar Leg. Urbana</span></td></tr>
-            <tr><td>Deliberações CTLU</td><td><span class="report-val-warn">Verificar Leg. Urbana &gt; Zoneamento</span></td></tr>
-            <tr><td>Melhoramento Viário / Faixa N.E.</td><td><span class="report-val-warn">Verificar Infra Urbana</span></td></tr>
-            <tr><td>Gabarito COMAR (aeronáutico)</td><td><span class="report-val-warn">Verificar Dataland / COMAER</span></td></tr>
-            <tr><td>Solo Mole / Restrição Geotécnica</td><td><span class="report-val-warn">Verificar Meio Físico GeoSampa</span></td></tr>
-            <tr><td>Área Contaminada</td><td><span class="report-val-warn">Verificar Licenciamento Ambiental</span></td></tr>
-            <tr><td>Vila / Rua sem Saída</td><td><span class="report-val-warn">Verificar Cadastro Fiscal GeoSampa</span></td></tr>
-          </table>
-        </div>`;
+        // ── 9. Checklist automático de camadas ──────────────────────────
+        // Monta lista com TODAS as camadas analisadas pelo relatório,
+        // mostrando na interface apenas as que têm interferência.
+        {
+          const _hit = gj => (gj?.features||[]).length > 0;
+          const checklistCompleto = [
+            // Cadastro
+            { grupo:'Cadastro / Base Territorial', titulo:'Lotes (SQL)',                           hit: _hit(gjLoteLogr) },
+            // Sistema Viário
+            { grupo:'Sistema Viário', titulo:'Logradouro Confrontante',                            hit: _hit(gjLoteLogr) },
+            // Legislação
+            { grupo:'Legislação Urbana', titulo:'ZEPEC — Zonas Especiais de Preservação Cultural',hit: _hit(gjZEPEC) },
+            { grupo:'Legislação Urbana', titulo:'Macroárea (PDE)',                                 hit: _hit(gjMacroarea) },
+            { grupo:'Legislação Urbana', titulo:'Macrozona (PDE)',                                 hit: _hit(gjMacrozona) },
+            { grupo:'Legislação Urbana', titulo:'AIU — Área de Intervenção Urbana',               hit: _hit(gjAIU) },
+            { grupo:'Legislação Urbana', titulo:'Enquadramento como Vila / Rua sem Saída',         hit: _hit(gjVila) },
+            { grupo:'Legislação Urbana', titulo:'Deliberações CTLU',                              hit: _hit(gjCTLU) },
+            { grupo:'Legislação Urbana', titulo:'Utilidade Pública / Interesse Social (DUP)',      hit: _hit(gjDUP) },
+            { grupo:'Legislação Urbana', titulo:'PDE — Intervenções em Viário Estrutural (Mapa 8)',hit: _hit(gjPdeViario) },
+            { grupo:'Legislação Urbana', titulo:'PDE — Intervenções Pontuais de Melhoramento (Mapa 8)', hit: _hit(gjPdePontual) },
+            { grupo:'Legislação Urbana', titulo:'PDE — Drenagem Ações Prioritárias Lineares (Mapa 12)', hit: _hit(gjPdeDrenLin) },
+            { grupo:'Legislação Urbana', titulo:'PDE — Drenagem Ações Prioritárias Pontuais (Mapa 12)', hit: _hit(gjPdeDrenPto) },
+            // Patrimônio
+            { grupo:'Patrimônio Cultural', titulo:'Bem Tombado / Em Processo de Tombamento',      hit: _hit(gjTombado) },
+            { grupo:'Patrimônio Cultural', titulo:'Acervo Tombado',                               hit: _hit(gjAcervoTombado) },
+            { grupo:'Patrimônio Cultural', titulo:'Bairro Ambiental',                             hit: _hit(gjBairroAmbiental) },
+            { grupo:'Patrimônio Cultural', titulo:'Área de Envoltória CONDEPHAAT',                hit: _hit(gjCondephaat) },
+            { grupo:'Patrimônio Cultural', titulo:'Área de Envoltória CONPRESP',                  hit: _hit(gjZEIS) },
+            { grupo:'Patrimônio Cultural', titulo:'Área de Envoltória IPHAN',                     hit: _hit(gjIphan) },
+            { grupo:'Patrimônio Cultural', titulo:'CIT — Cadastro de Imóveis Tombados',           hit: _hit(gjCIT) },
+            // Transporte
+            { grupo:'Transporte', titulo:'Metrô (Linha)',                                          hit: _hit(gjMetroLinha) },
+            { grupo:'Transporte', titulo:'Metrô (Área de Influência)',                             hit: _hit(gjMetroArea) },
+            { grupo:'Transporte', titulo:'Trem Metropolitano (Linha)',                             hit: _hit(gjTremLinha) },
+            { grupo:'Transporte', titulo:'Trem (Área de Influência)',                              hit: _hit(gjTremArea) },
+            // Ambiental
+            { grupo:'Licenciamento Ambiental', titulo:'Rede de Drenagem (Córregos — raio 20m)',   hit: _hit(gjDrenagem) },
+            { grupo:'Licenciamento Ambiental', titulo:'Mancha de Inundação (5 anos)',              hit: _hit(gjMancha5) },
+            { grupo:'Licenciamento Ambiental', titulo:'Mancha de Inundação (25 anos)',             hit: _hit(gjMancha25) },
+            { grupo:'Licenciamento Ambiental', titulo:'Mancha de Inundação (100 anos)',            hit: _hit(gjMancha100) },
+            { grupo:'Licenciamento Ambiental', titulo:'Área Inundável (PDMAT3 100 anos)',          hit: _hit(gjInund) },
+            { grupo:'Licenciamento Ambiental', titulo:'Área Contaminada (SIGAC)',                  hit: _hit(gjContaminadaSigac) },
+            { grupo:'Licenciamento Ambiental', titulo:'Área Contaminada Reabilitada / Suspeita (SVMA)', hit: _hit(gjContaminadaSvma) },
+            { grupo:'Licenciamento Ambiental', titulo:'Estudo / Relatório de Impacto de Vizinhança (Heliponto)', hit: _hit(gjHeliponto) },
+            // Infraestrutura
+            { grupo:'Infraestrutura Urbana', titulo:'Energia — Linha de Alta Tensão (raio 30m)',   hit: _hit(gjLinhaAT) },
+            { grupo:'Infraestrutura Urbana', titulo:'Energia — Torre de Alta Tensão (raio 30m)',   hit: _hit(gjTorreAT) },
+            { grupo:'Infraestrutura Urbana', titulo:'Lei de Melhoramento Viário',                  hit: _hit(gjMelhoramento) },
+            { grupo:'Infraestrutura Urbana', titulo:'Faixa Não Edificável',                        hit: _hit(gjFaixaNE) },
+            { grupo:'Infraestrutura Urbana', titulo:'Solo Mole',                                   hit: _hit(gjSoloMole) },
+            { grupo:'Infraestrutura Urbana', titulo:'Carta Geotécnica',                            hit: _hit(gjCartaGeo) },
+            { grupo:'Verde', titulo:'Mapeamento de Cobertura Vegetal',                             hit: _hit(gjCobertura) },
+            { grupo:'Mananciais', titulo:'Manancial — Guarapiranga',                               hit: _hit(gjManG) },
+            { grupo:'Mananciais', titulo:'Manancial — Billings',                                   hit: _hit(gjManB) },
+            { grupo:'Risco Geológico', titulo:'Área de Risco Geológico',                           hit: _hit(gjRisco) },
+            // Gabarito COMAR não tem camada GeoSampa — mantém como verificação manual
+          ];
+
+          const comInterferencia = checklistCompleto.filter(c => c.hit);
+          const semDados = checklistCompleto.filter(c => !c.hit);
+
+          if (comInterferencia.length > 0) {
+            // Agrupa por grupo
+            const grupos = {};
+            comInterferencia.forEach(c => { if (!grupos[c.grupo]) grupos[c.grupo]=[]; grupos[c.grupo].push(c.titulo); });
+            let rows = '';
+            for (const [grp, itens] of Object.entries(grupos)) {
+              itens.forEach((titulo, i) => {
+                rows += `<tr>
+                  <td style="color:var(--muted);font-size:9px;padding-top:${i===0?'10px':'4px'}">${i===0?grp:''}</td>
+                  <td style="padding-top:${i===0?'10px':'4px'}">${titulo}</td>
+                  <td style="padding-top:${i===0?'10px':'4px'}"><span class="report-val-warn">COM INTERFERÊNCIA</span></td>
+                </tr>`;
+              });
+            }
+            html += `<div class="report-section">
+              <div class="report-section-title">Camadas com Interferência — Verificar no relatório PDF</div>
+              <div class="report-note" style="border-top:none;padding-bottom:0">Camadas com dados encontrados na geometria do terreno. Detalhes completos no relatório PDF.</div>
+              <table class="report-table" style="margin-top:4px">${rows}</table>
+            </div>`;
+          }
+
+          // Itens que não têm camada GeoSampa — verificação manual obrigatória
+          html += `<div class="report-section" style="opacity:.85">
+            <div class="report-section-title">Verificar Manualmente</div>
+            <table class="report-table">
+              <tr><td>Gabarito COMAR (aeronáutico)</td><td><span class="report-val-warn">Verificar Dataland / COMAER</span></td></tr>
+              ${comInterferencia.length===0 && semDados.length===checklistCompleto.length
+                ? `<tr><td colspan="2" style="color:var(--muted);font-style:italic;padding:8px 12px">Nenhuma interferência detectada nas camadas analisadas automaticamente.</td></tr>`
+                : ''}
+            </table>
+          </div>`;
+        }
 
       } else {
         html += `<div class="report-alert">⚠ Zona <strong>${code}</strong> não encontrada na tabela local. Consultar SMUL ou Quadro 2 da Lei 16.402/16.</div>`;
@@ -2573,17 +2696,6 @@ async function _runReport(features) {
         </div>`;
       }
     }
-
-    // ── Nota: AIU e Arcos — verificação manual ──────────────────────────
-    html += `<div class="report-section" style="opacity:.8">
-      <div class="report-section-title">OUTRAS SOBREPOSIÇÕES — Verificar Manualmente</div>
-      <table class="report-table">
-        <tr><td>AIU — Área de Intervenção Urbana</td><td><span class="report-val-warn">Verificar Leg. Urbana / GeoSampa</span></td></tr>
-        <tr><td>Arco Metropolitano / Pinheiros / Tietê</td><td><span class="report-val-warn">Verificar PDE — parâmetros específicos</span></td></tr>
-        <tr><td>ZEPEC / AUE / BH Tombado</td><td><span class="report-val-warn">Verificar CIT / CONPRESP / IPHAN</span></td></tr>
-        <tr><td>CTLU — Deliberações</td><td><span class="report-val-warn">Verificar Legislação Urbanística SP</span></td></tr>
-      </table>
-    </div>`;
 
     // ── Restrições detectadas automaticamente ────────────────────────
     const restricoes = [];
@@ -3293,9 +3405,11 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
   }
 
   // 2) Lote — tabela de atributos de todos os lotes que tocam o terreno
+  let _lotesFeatsParaComparacao = [];
   try {
     const gj = await fetchWFSByGeom('geoportal:lote_cidadao', wkt, 50);
     const feats = gj?.features || [];
+    _lotesFeatsParaComparacao = feats; // guarda para a comparação de áreas abaixo
     if (feats.length > 0) {
       const headers = ['Dígito SQL', 'Endereço', 'Área Terreno (m²)'];
       const rows = feats.map(f => {
@@ -3309,6 +3423,33 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
     }
   } catch (e) {
     results.push({ id: 'lote', titulo: 'Cadastro — Lotes (SQL)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
+  }
+
+  // 2b) Comparação de Áreas — Soma(Áreas dos Lotes IPTU) vs Área da
+  // geometria desenhada no Giraffe. Reaproveita os lotes já buscados no
+  // item anterior — não faz nova consulta WFS.
+  // Divergência > 5%: alerta para conferência com o cliente.
+  try {
+    if (_lotesFeatsParaComparacao.length > 0 && terrainGeom && typeof turf !== 'undefined') {
+      const somaLotes = _lotesFeatsParaComparacao.reduce((acc, f) => acc + (parseFloat(f.properties?.qt_area_terreno) || 0), 0);
+      const areaGiraffe = turf.area({ type: 'Feature', geometry: terrainGeom, properties: {} });
+      if (somaLotes > 0) {
+        const diffPct = Math.abs(somaLotes - areaGiraffe) / somaLotes * 100;
+        const linhas = [
+          `Soma das áreas dos lotes (Cadastro Fiscal/IPTU): ${Math.round(somaLotes).toLocaleString('pt-BR')} m²`,
+          `Área da geometria desenhada no Giraffe: ${Math.round(areaGiraffe).toLocaleString('pt-BR')} m²`,
+          `Diferença: ${diffPct.toFixed(1)}%${diffPct > 5 ? ' — ⚠ divergência acima de 5%, conferir a geometria desenhada ou o cadastro fiscal' : ' — dentro da tolerância de 5%'}`,
+        ];
+        if (diffPct > 5) linhas.push('⚠ Caso haja variação maior que 5%, será necessário informar o cliente.');
+        results.push({ id: 'comparacao_areas', titulo: 'Cadastro — Comparação de Áreas (Lotes × Geometria Giraffe)', temInterferencia: diffPct > 5, resumoLinhas: linhas, imagem: null });
+      } else {
+        results.push({ id: 'comparacao_areas', titulo: 'Cadastro — Comparação de Áreas (Lotes × Geometria Giraffe)', temInterferencia: false, resumoLinhas: ['Área dos lotes não disponível para comparação.'], imagem: null });
+      }
+    } else {
+      results.push({ id: 'comparacao_areas', titulo: 'Cadastro — Comparação de Áreas (Lotes × Geometria Giraffe)', temInterferencia: false, resumoLinhas: ['Sem lotes identificados para comparar.'], imagem: null });
+    }
+  } catch (e) {
+    results.push({ id: 'comparacao_areas', titulo: 'Cadastro — Comparação de Áreas (Lotes × Geometria Giraffe)', temInterferencia: false, resumoLinhas: [`Erro no cálculo: ${e.message}`], imagem: null });
   }
 
   // 3) Área Cedida — imagem WMS nativa + overlay geométrico real
@@ -4623,7 +4764,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V71 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V73 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
