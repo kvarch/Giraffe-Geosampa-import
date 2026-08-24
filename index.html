@@ -443,17 +443,17 @@
 
   <!-- TABS -->
   <div class="tabs">
-    <div class="tab active" data-tab="scan" onclick="switchTab('scan')">① Varredura</div>
-    <div class="tab" data-tab="import" onclick="switchTab('import')">② Importar</div>
-    <div class="tab" data-tab="log" onclick="switchTab('log')">③ Log</div>
-    <div class="tab" data-tab="proxy" onclick="switchTab('proxy')">⚙ Proxy</div>
+    <div class="tab active" data-tab="importar" onclick="switchTab('importar')">Importar dados</div>
     <div class="tab" data-tab="report" onclick="switchTab('report')">📋 Relatório</div>
+    <div class="tab" data-tab="log" onclick="switchTab('log')">Log</div>
+    <div class="tab" data-tab="proxy" onclick="switchTab('proxy')">⚙ Proxy</div>
   </div>
 
   <div class="panels">
 
     <!-- ① SCAN -->
-    <div class="panel active" id="panel-scan">
+    <!-- IMPORTAR DADOS (Varredura + Importar unificados) -->
+    <div class="panel active" id="panel-importar">
       <div class="card">
         <div class="card-label">Fonte do Terreno</div>
         <div class="toggle-wrap" style="margin-bottom:8px">
@@ -490,11 +490,8 @@
         </button>
         <button class="btn btn-ghost" id="btnPickTerrain" onclick="pickTerrainAndScan()" title="Clicar no terreno no mapa para selecionar" style="padding:9px 12px;flex-shrink:0">🖱</button>
       </div>
-    </div>
 
-    <!-- ② IMPORT -->
-    <div class="panel" id="panel-import">
-<div class="card" id="presetCard">
+      <div class="card" id="presetCard" style="margin-top:8px">
         <div class="card-label">Filtros Rápidos</div>
          <button class="btn btn-ghost" style="width:100%; border-color:var(--kv-blue); color:var(--kv-blue); margin-bottom: 6px;" onclick="window.runPresetBase()">
            🏙 Importar Pacote Base (Quadras, Calçadas, Praças e Ruas)
@@ -1209,7 +1206,7 @@ window.runScan=async function(){
 
     setScanStatus('loading',`Varrendo ${catalog.length} camadas — ${scanWKT?'polígono+buffer':'BBOX+offset'}...`);
     log('info',`Modo: ${scanWKT?'INTERSECTS com polígono + buffer '+offsetMeters+'m':'BBOX + offset '+offsetMeters+'m'} · ${catalog.length} camadas`);
-    window.switchTab('import');
+    window.switchTab('importar');
     document.getElementById('emptyLayerState').style.display='none';
     document.getElementById('scanProgressWrap').style.display='block';
     document.getElementById('selRow').style.display='none';
@@ -1331,7 +1328,7 @@ window.runImport=async function(){
  window.runPresetBase = async function() {
    if (!currentBBOX) {
      log('err', '⚠ Execute a varredura (Ler Terreno) na aba ① primeiro!');
-     window.switchTab('scan');
+     window.switchTab('importar');
      return;
    }
    if (importRunning) return;
@@ -4626,7 +4623,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V70 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V71 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
