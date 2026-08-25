@@ -575,7 +575,7 @@
         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);line-height:1.6;margin-bottom:10px">
           Calcula a linha mediana entre os alinhamentos prediais opostos de cada rua confrontante.<br>
           Usa <strong style="color:var(--on-surface)">quadra_fiscal</strong> como limite dos lotes.<br>
-          <span style="color:var(--warn)">⚠ Execute "Ler Terreno" primeiro ou selecione o terreno no mapa.</span>
+          Selecione o terreno no mapa antes de clicar — ou clique no botão e depois clique no terreno quando solicitado.
         </div>
         <button class="btn btn-primary" id="btnMedianas" onclick="runMedianas()" style="width:100%">
           📐 Gerar Linhas Medianas das Ruas
@@ -4944,10 +4944,29 @@ window.runMedianas = async function() {
     terGeom = window._kvTerrainGeomForReport; terGeomSource = 'último relatório gerado';
   }
 
+  // 4. Fallback: pede clique explícito no mapa (pickRawSections aguarda interação)
   if (!terGeom) {
-    setMedianasStatus('warn', '⚠ Nenhum terreno encontrado. Selecione um terreno no mapa, execute "Ler Terreno" ou gere o Relatório primeiro.');
-    log('warn', 'Medianas: sem terreno — selecione no mapa, rode varredura ou gere relatório.');
-    return;
+    setMedianasStatus('loading', 'Clique no terreno no mapa para selecionar...');
+    log('info', 'Medianas: aguardando clique no terreno...');
+    document.getElementById('btnMedianas').disabled = true;
+    try {
+      const secs = await rpc.invoke('pickRawSections', []);
+      const geoms = (secs||[]).filter(f => f.geometry &&
+        (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
+      if (geoms.length > 0) {
+        terGeom = mergeToSinglePolygon(geoms);
+        terGeomSource = 'clique no mapa';
+      } else {
+        setMedianasStatus('warn', '⚠ Nenhum terreno clicado. Clique sobre o polígono do terreno no mapa.');
+        log('warn', 'Medianas: clique cancelado ou sem geometria.');
+        return;
+      }
+    } catch(e) {
+      setMedianasStatus('error', `Erro ao selecionar terreno: ${e.message}`);
+      return;
+    } finally {
+      document.getElementById('btnMedianas').disabled = false;
+    }
   }
 
   // Confirma no log a fonte e geometria capturada
@@ -5161,7 +5180,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V89 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V90 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
