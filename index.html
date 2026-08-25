@@ -4842,12 +4842,14 @@ function _fromM(m, cx, cy) {
 }
 
 function _densifyRing(ring, stepM) {
-  const line = turf.lineString(ring);
-  const totalKm = turf.length(line, {units:'kilometers'});
-  const stepKm = stepM / 1000;
+  // Remove ponto repetido do anel antes de criar LineString
+  const open = ring[0][0]===ring[ring.length-1][0]&&ring[0][1]===ring[ring.length-1][1]
+    ? ring.slice(0,-1) : ring;
+  const line = turf.lineString(open);
+  const totalM = turf.length(line, {units:'meters'});
   const pts = [];
-  for (let d = 0; d <= totalKm + stepKm/2; d += stepKm) {
-    pts.push(turf.along(line, Math.min(d, totalKm), {units:'kilometers'}).geometry.coordinates);
+  for (let d = 0; d <= totalM + stepM/2; d += stepM) {
+    pts.push(turf.along(line, Math.min(d, totalM), {units:'meters'}).geometry.coordinates);
   }
   return pts;
 }
@@ -4975,6 +4977,8 @@ window.runMedianas = async function() {
     const qaArea = quadraAlvo.properties.qt_area_quadra_fiscal?.toFixed(0);
     const qaRing = _outerRing(quadraAlvo.geometry);
     log('info', `Medianas: Quadra Alvo id=${qaId} área=${qaArea}m² verts=${qaRing?.length}`);
+    const terCtrLog = terCtr.map(v=>v.toFixed(5));
+    log('info', `Medianas: centróide terreno=[${terCtrLog}]`);
 
     // ── 3. Vizinhas = todas as outras quadras (exceto a Alvo) ──
     const vizRings = quadras
@@ -4987,7 +4991,7 @@ window.runMedianas = async function() {
     setMedianasStatus('loading', 'Densificando contorno da quadra alvo...');
     if (!qaRing) { setMedianasStatus('error', 'Anel da quadra alvo inválido.'); return; }
     const densePts = _densifyRing(qaRing, 3);
-    log('info', `Medianas: ${densePts.length} pontos densificados`);
+    log('info', `Medianas: ${densePts.length} pontos densificados (primeiro=${JSON.stringify(densePts[0])}, último=${JSON.stringify(densePts[densePts.length-1])})`);
 
     // ── 5. Para cada ponto: vizinha mais próxima ──
     setMedianasStatus('loading', 'Mapeando vizinhança...');
@@ -5015,7 +5019,10 @@ window.runMedianas = async function() {
       grupos[0] = [...last, ...grupos[0]];
     }
     log('info', `Medianas: ${grupos.length} face(s) identificada(s)`);
-    grupos.forEach((g,i) => log('info', `  face ${i+1}: ${g.length} pts, vizId=${g[0].vizId}`));
+    grupos.forEach((g,i) => {
+      const uniqViz=[...new Set(g.map(p=>p.vizId))];
+      log('info', `  face ${i+1}: ${g.length} pts, vizId=${g[0].vizId} (${uniqViz.length} vizIds únicos)`);
+    });
 
     // ── 7. Linha mediana reta por face ──
     setMedianasStatus('loading', 'Calculando medianas...');
@@ -5136,7 +5143,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V86 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V87 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
