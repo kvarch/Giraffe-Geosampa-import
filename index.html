@@ -4797,18 +4797,22 @@ window.exportReportPDF = async function() {
 
 
 // ══════════════════════════════════════════════════════════════════
-// ENVOLTÓRIA — MEDIANAS PREDIAIS (v5)
+// ENVOLTÓRIA — MEDIANAS PREDIAIS (v6)
 //
-// Abordagem: "Agrupamento por Vizinho" usando turf.js v6
+// Mantém o "Agrupamento por Vizinho" do v5 para detectar faces.
+// Melhora a qualidade geométrica:
 //
-// 1. Quadra Alvo = quadra_fiscal que contém o terreno
-// 2. Quadras Vizinhas = quadras_fiscais em 150m (exceto a Alvo)
-// 3. Contorno da Quadra Alvo densificado a 3m via turf.along
-// 4. Para cada ponto densificado: qual Vizinha está mais próxima?
-//    (via turf.pointToLineDistance ao contorno de cada vizinha)
-// 5. Agrupamento: mudança de vizinha = nova face (esquina)
-// 6. Mediana de cada grupo: turf.midpoint(ponto_alvo, nearest_on_vizinha)
-// 7. Exporta segmento por face como FeatureCollection
+// A) Linha RETA por face:
+//    Cada grupo de pontos define uma face. Em vez de midpoints
+//    ponto-a-ponto (ondulado), calcula:
+//    1. Reta da face da Alvo: regressão linear dos pontos do grupo
+//    2. Reta da face da Vizinha: aresta mais paralela e próxima
+//    3. Offset constante = distância perpendicular média / 2
+//    → Mediana = reta paralela equidistante, comprimento = range do grupo
+//
+// B) Extensão até cruzamentos:
+//    Para cada par de medianas adjacentes, calcula a interseção das
+//    suas retas → estende ambas até esse ponto.
 // ══════════════════════════════════════════════════════════════════
 
 function setMedianasStatus(state, msg) {
@@ -4820,71 +4824,106 @@ function setMedianasStatus(state, msg) {
   el.textContent = msg;
 }
 
-// Densifica um anel (array de [lng,lat]) em pontos a cada stepM metros
-// usando turf.along + turf.length
+const _Rm = 6371000, _radm = Math.PI / 180;
+
+// Converte [lng,lat] para metros locais em relação a um centro
+function _toM(v, cx, cy) {
+  const cosL = Math.cos(cy * _radm);
+  return [(v[0] - cx) * _radm * _Rm * cosL, (v[1] - cy) * _radm * _Rm];
+}
+function _fromM(m, cx, cy) {
+  const cosL = Math.cos(cy * _radm);
+  return [cx + m[0] / (_radm * _Rm * cosL), cy + m[1] / (_radm * _Rm)];
+}
+
+// Densifica anel a cada stepM metros via turf.along
 function _densifyRing(ring, stepM) {
-  // Monta LineString do anel (sem fechar — já está fechado no GeoJSON)
   const line = turf.lineString(ring);
   const totalKm = turf.length(line, { units: 'kilometers' });
   const stepKm = stepM / 1000;
   const pts = [];
-  for (let d = 0; d <= totalKm; d += stepKm) {
+  for (let d = 0; d <= totalKm + stepKm / 2; d += stepKm) {
     const pt = turf.along(line, Math.min(d, totalKm), { units: 'kilometers' });
-    pts.push(pt);
+    pts.push(pt.geometry.coordinates);
   }
-  return pts; // array de turf Feature<Point>
+  return pts;
 }
 
-// Dado um ponto turf e um anel [lng,lat], retorna o ponto mais próximo no anel
-// usando turf.pointToLineDistance implicitamente via varredura de segmentos
-function _nearestOnRing(ptFeature, ring) {
-  const line = turf.lineString(ring);
-  // Encontra ponto projetado mais próximo percorrendo os segmentos
-  let bestDist = Infinity, bestPt = null;
-  const coords = ring;
-  const px = ptFeature.geometry.coordinates[0];
-  const py = ptFeature.geometry.coordinates[1];
-  for (let i = 0; i < coords.length - 1; i++) {
-    const A = coords[i], B = coords[i + 1];
-    // Projeção escalar no segmento AB
+// Ponto mais próximo no anel ao ponto P (projeção sobre segmentos)
+function _nearestOnRing(P, ring) {
+  const cx = P[0], cy = P[1];
+  let best = Infinity, bestPt = ring[0];
+  for (let i = 0; i < ring.length - 1; i++) {
+    const A = ring[i], B = ring[i + 1];
     const dx = B[0] - A[0], dy = B[1] - A[1];
     const len2 = dx * dx + dy * dy;
-    let t = len2 > 0 ? ((px - A[0]) * dx + (py - A[1]) * dy) / len2 : 0;
-    t = Math.max(0, Math.min(1, t));
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((cx - A[0]) * dx + (cy - A[1]) * dy) / len2)) : 0;
     const nx = A[0] + t * dx, ny = A[1] + t * dy;
-    // distância euclidiana em graus (suficiente para comparação relativa)
-    const cosL = Math.cos(py * Math.PI / 180);
-    const ddx = (nx - px) * cosL, ddy = ny - py;
-    const d = Math.sqrt(ddx * ddx + ddy * ddy);
-    if (d < bestDist) { bestDist = d; bestPt = [nx, ny]; }
+    const cosL = Math.cos(cy * _radm);
+    const d = Math.sqrt(((nx - cx) * cosL) ** 2 + (ny - cy) ** 2);
+    if (d < best) { best = d; bestPt = [nx, ny]; }
   }
-  return bestPt; // [lng, lat]
+  return bestPt;
 }
 
-// Distância aproximada em graus (para comparação relativa entre vizinhas)
-function _approxDist(ptCoords, ring) {
-  const px = ptCoords[0], py = ptCoords[1];
-  const cosL = Math.cos(py * Math.PI / 180);
+// Distância aproximada ponto → anel (para comparação)
+function _distToRing(P, ring) {
+  const cx = P[0], cy = P[1];
   let best = Infinity;
   for (let i = 0; i < ring.length - 1; i++) {
     const A = ring[i], B = ring[i + 1];
     const dx = B[0] - A[0], dy = B[1] - A[1];
     const len2 = dx * dx + dy * dy;
-    let t = len2 > 0 ? ((px - A[0]) * dx + (py - A[1]) * dy) / len2 : 0;
-    t = Math.max(0, Math.min(1, t));
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((cx - A[0]) * dx + (cy - A[1]) * dy) / len2)) : 0;
     const nx = A[0] + t * dx, ny = A[1] + t * dy;
-    const ddx = (nx - px) * cosL, ddy = ny - py;
-    const d = Math.sqrt(ddx * ddx + ddy * ddy);
+    const cosL = Math.cos(cy * _radm);
+    const d = Math.sqrt(((nx - cx) * cosL) ** 2 + (ny - cy) ** 2);
     if (d < best) best = d;
   }
   return best;
+}
+
+// Anel exterior
+function _outerRing(geom) {
+  if (geom.type === 'Polygon') return geom.coordinates[0];
+  if (geom.type === 'MultiPolygon') return geom.coordinates[0][0];
+  return null;
+}
+
+// Regressão linear em metros locais → {cx, cy, ux, uy} (ponto médio + direção unitária)
+function _fitLine(ptsWGS) {
+  const n = ptsWGS.length;
+  const cx = ptsWGS.reduce((s, p) => s + p[0], 0) / n;
+  const cy = ptsWGS.reduce((s, p) => s + p[1], 0) / n;
+  const ptsM = ptsWGS.map(p => _toM(p, cx, cy));
+  const sxx = ptsM.reduce((s, p) => s + p[0] * p[0], 0);
+  const syy = ptsM.reduce((s, p) => s + p[1] * p[1], 0);
+  const sxy = ptsM.reduce((s, p) => s + p[0] * p[1], 0);
+  // PCA: maior autovetor
+  const disc = Math.sqrt((sxx - syy) ** 2 / 4 + sxy * sxy);
+  const lam = (sxx + syy) / 2 + disc;
+  let ux = lam - syy, uy = sxy;
+  if (Math.abs(sxy) < 1e-10) { ux = 1; uy = 0; }
+  const nm = Math.sqrt(ux * ux + uy * uy);
+  ux /= nm; uy /= nm;
+  return { cx, cy, ux, uy }; // centróide WGS84 + direção unitária em metros
+}
+
+// Interseção de duas retas paramétrica em metros locais
+// r0: P0 + t*D0,  r1: P1 + s*D1
+// Retorna t para r0 (ou null se paralelas)
+function _intersectLines(P0, D0, P1, D1) {
+  const cross = D0[0] * D1[1] - D0[1] * D1[0];
+  if (Math.abs(cross) < 1e-10) return null;
+  const dx = P1[0] - P0[0], dy = P1[1] - P0[1];
+  return (dx * D1[1] - dy * D1[0]) / cross;
 }
 
 window.runMedianas = async function () {
   document.getElementById('medianasEmpty').style.display = 'none';
   document.getElementById('medianasResult').style.display = 'none';
 
-  // ── Terreno: getSelectedFeatures → currentGeometry → pickRawSections ──
+  // ── Terreno ──
   let terGeom = null;
   setMedianasStatus('loading', 'Buscando terreno selecionado...');
   try {
@@ -4892,16 +4931,10 @@ window.runMedianas = async function () {
     if (sel?.length > 0) {
       const pols = sel.filter(f => f.geometry &&
         (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'));
-      if (pols.length > 0) {
-        terGeom = mergeToSinglePolygon(pols);
-        log('info', 'Medianas: terreno via getSelectedFeatures');
-      }
+      if (pols.length > 0) { terGeom = mergeToSinglePolygon(pols); log('info', 'Medianas: terreno via getSelectedFeatures'); }
     }
   } catch (_) {}
-  if (!terGeom && currentGeometry) {
-    terGeom = currentGeometry;
-    log('info', 'Medianas: terreno via currentGeometry (última varredura)');
-  }
+  if (!terGeom && currentGeometry) { terGeom = currentGeometry; log('info', 'Medianas: terreno via currentGeometry'); }
   if (!terGeom) {
     setMedianasStatus('loading', 'Clique no terreno no mapa...');
     document.getElementById('btnMedianas').disabled = true;
@@ -4909,7 +4942,7 @@ window.runMedianas = async function () {
       const secs = await rpc.invoke('pickRawSections', []);
       const geoms = (secs || []).filter(f => f.geometry &&
         (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'));
-      if (geoms.length > 0) { terGeom = mergeToSinglePolygon(geoms); log('info', 'Medianas: terreno via pickRawSections'); }
+      if (geoms.length > 0) { terGeom = mergeToSinglePolygon(geoms); log('info', 'Medianas: terreno via pick'); }
       else { setMedianasStatus('warn', '⚠ Nenhum terreno selecionado.'); return; }
     } catch (e) { setMedianasStatus('error', e.message); return; }
     finally { document.getElementById('btnMedianas').disabled = false; }
@@ -4917,196 +4950,200 @@ window.runMedianas = async function () {
   if (!proxyUrl) { setMedianasStatus('error', '⚠ Configure o proxy na aba ⚙ Proxy primeiro.'); return; }
 
   try {
-    // ── 1. Busca quadra_fiscal em 150m ──
+    // ── 1. Quadras fiscais em 150m ──
     setMedianasStatus('loading', 'Buscando quadras fiscais...');
     const buf150 = turfBuffer(terGeom, 150);
-    const wkt150 = geojsonToWKT(buf150);
-    const gjQ = await fetchWFSByGeom('geoportal:quadra_fiscal', wkt150, 200);
+    const gjQ = await fetchWFSByGeom('geoportal:quadra_fiscal', geojsonToWKT(buf150), 200);
     const quadras = (gjQ?.features || []).filter(f =>
       f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'));
+    if (quadras.length === 0) { setMedianasStatus('error', 'Nenhuma quadra fiscal na área.'); return; }
+    log('info', `Medianas: ${quadras.length} quadras`);
 
-    if (quadras.length === 0) {
-      setMedianasStatus('error', 'Nenhuma quadra fiscal encontrada na área.');
-      document.getElementById('medianasEmpty').style.display = 'flex';
-      return;
-    }
-    log('info', `Medianas: ${quadras.length} quadras fiscais encontradas`);
-
-    // ── 2. Quadra Alvo = a que melhor contém o terreno ──
-    setMedianasStatus('loading', 'Identificando Quadra Alvo...');
-    const terFeat = { type: 'Feature', geometry: terGeom, properties: {} };
-    const terCtr = turf.centroid(terFeat).geometry.coordinates;
-
-    // Primeiro tenta: a quadra que contém o centróide do terreno
+    // ── 2. Quadra Alvo (contém centróide do terreno) ──
+    const terCtr = turf.centroid({ type: 'Feature', geometry: terGeom, properties: {} }).geometry.coordinates;
     let quadraAlvo = null;
     for (const q of quadras) {
-      try {
-        if (turf.booleanPointInPolygon(turf.point(terCtr), q)) {
-          quadraAlvo = q; break;
-        }
-      } catch (_) {}
+      try { if (turf.booleanPointInPolygon(turf.point(terCtr), q)) { quadraAlvo = q; break; } } catch (_) {}
     }
-    // Fallback: a que intersecta com maior área
     if (!quadraAlvo) {
-      let maxArea = -1;
+      // fallback: maior intersecção
+      let maxA = -1;
       for (const q of quadras) {
         try {
-          if (turf.booleanIntersects(terFeat, q)) {
+          if (turf.booleanIntersects({ type: 'Feature', geometry: terGeom, properties: {} }, q)) {
             const a = q.properties.qt_area_quadra_fiscal || 0;
-            if (a > maxArea) { maxArea = a; quadraAlvo = q; }
+            if (a > maxA) { maxA = a; quadraAlvo = q; }
           }
         } catch (_) {}
       }
     }
-    // Fallback final: mais próxima
-    if (!quadraAlvo) {
-      let minD = Infinity;
-      for (const q of quadras) {
-        try {
-          const d = turf.distance(turf.point(terCtr), turf.centroid(q), { units: 'meters' });
-          if (d < minD) { minD = d; quadraAlvo = q; }
-        } catch (_) {}
-      }
-    }
     if (!quadraAlvo) { setMedianasStatus('error', 'Quadra Alvo não encontrada.'); return; }
-
     const qaId = quadraAlvo.properties.cd_identificador;
-    const qaCtr = turf.centroid(quadraAlvo).geometry.coordinates;
-    log('info', `Medianas: Quadra Alvo id=${qaId} área=${quadraAlvo.properties.qt_area_quadra_fiscal?.toFixed(0)}m² ctr=[${qaCtr[0].toFixed(5)},${qaCtr[1].toFixed(5)}]`);
+    log('info', `Medianas: Quadra Alvo id=${qaId} área=${quadraAlvo.properties.qt_area_quadra_fiscal?.toFixed(0)}m²`);
 
-    // ── 3. Quadras Vizinhas ──
-    const vizinhas = quadras.filter(q => q.properties.cd_identificador !== qaId);
-    if (vizinhas.length === 0) {
-      setMedianasStatus('warn', '⚠ Nenhuma quadra vizinha encontrada no buffer de 150m.');
-      return;
-    }
+    // ── 3. Vizinhas e seus anéis ──
+    const vizRings = quadras
+      .filter(q => q.properties.cd_identificador !== qaId)
+      .map(q => ({ id: q.properties.cd_identificador, ring: _outerRing(q.geometry) }))
+      .filter(v => v.ring && v.ring.length > 2);
 
-    // Pré-computa os anéis das vizinhas (com IDs)
-    const vizRings = vizinhas.map(q => {
-      const geom = q.geometry;
-      const ring = geom.type === 'Polygon' ? geom.coordinates[0]
-        : geom.type === 'MultiPolygon' ? geom.coordinates[0][0] : null;
-      return { id: q.properties.cd_identificador, ring, q };
-    }).filter(v => v.ring && v.ring.length > 2);
+    // ── 4. Densifica contorno da Alvo a 3m ──
+    setMedianasStatus('loading', 'Densificando contorno...');
+    const qaRing = _outerRing(quadraAlvo.geometry);
+    const densePts = _densifyRing(qaRing, 3);
+    log('info', `Medianas: ${densePts.length} pontos a 3m`);
 
-    log('info', `Medianas: ${vizRings.length} quadras vizinhas`);
-
-    // ── 4. Densifica contorno da Quadra Alvo a 3m ──
-    setMedianasStatus('loading', 'Densificando contorno da Quadra Alvo...');
-    const qaRing = quadraAlvo.geometry.type === 'Polygon'
-      ? quadraAlvo.geometry.coordinates[0]
-      : quadraAlvo.geometry.coordinates[0][0];
-
-    const densePts = _densifyRing(qaRing, 3); // array de turf Feature<Point>
-    log('info', `Medianas: ${densePts.length} pontos densificados (passo 3m)`);
-
-    // ── 5. Para cada ponto densificado: acha a vizinha mais próxima ──
+    // ── 5. Mapeia vizinha mais próxima para cada ponto ──
     setMedianasStatus('loading', 'Mapeando vizinhança...');
-    const ptData = densePts.map(ptFeat => {
-      const coords = ptFeat.geometry.coordinates;
-      let bestVizId = null, bestDist = Infinity, bestNearPt = null;
+    const ptData = densePts.map(pt => {
+      let bestId = null, bestDist = Infinity, bestNear = null;
       for (const v of vizRings) {
-        const d = _approxDist(coords, v.ring);
-        if (d < bestDist) {
-          bestDist = d;
-          bestVizId = v.id;
-          bestNearPt = _nearestOnRing(ptFeat, v.ring);
-        }
+        const d = _distToRing(pt, v.ring);
+        if (d < bestDist) { bestDist = d; bestId = v.id; bestNear = _nearestOnRing(pt, v.ring); }
       }
-      return { ptCoords: coords, vizId: bestVizId, nearPt: bestNearPt };
+      return { pt, vizId: bestId, near: bestNear };
     });
 
-    // ── 6. Agrupa por vizinha consecutiva (quebra nas esquinas) ──
+    // ── 6. Agrupa por vizinha consecutiva ──
     setMedianasStatus('loading', 'Agrupando por face...');
     const grupos = [];
-    if (ptData.length === 0) { setMedianasStatus('warn', '⚠ Sem pontos densificados.'); return; }
-
-    let curGroup = [ptData[0]];
+    if (!ptData.length) { setMedianasStatus('warn', '⚠ Sem pontos.'); return; }
+    let cur = [ptData[0]];
     for (let i = 1; i < ptData.length; i++) {
-      if (ptData[i].vizId === curGroup[0].vizId) {
-        curGroup.push(ptData[i]);
-      } else {
-        grupos.push([...curGroup]);
-        curGroup = [ptData[i]];
-      }
+      if (ptData[i].vizId === cur[0].vizId) cur.push(ptData[i]);
+      else { grupos.push([...cur]); cur = [ptData[i]]; }
     }
-    grupos.push([...curGroup]);
-
-    // Trata fechamento do anel: se primeiro e último grupo têm mesma vizinha, une
+    grupos.push([...cur]);
+    // Fecha anel: une primeiro e último se mesma vizinha
     if (grupos.length > 1 && grupos[0][0].vizId === grupos[grupos.length - 1][0].vizId) {
       const last = grupos.pop();
       grupos[0] = [...last, ...grupos[0]];
     }
+    log('info', `Medianas: ${grupos.length} face(s)`);
 
-    log('info', `Medianas: ${grupos.length} face(s) após agrupamento`);
+    // ── 7. Linha mediana RETA por face ──
+    setMedianasStatus('loading', 'Calculando medianas retas...');
 
-    // ── 7. Gera linha mediana para cada grupo ──
-    setMedianasStatus('loading', `Gerando ${grupos.length} mediana(s)...`);
-    const medianFeatures = [];
+    // Para cada grupo: reta da face Alvo + reta da face Vizinha → mediana paralela
+    const medianLines = []; // {cx,cy (WGS84), ux,uy (dir em metros), halfDist, vizId, ptsAlvo}
+
+    for (const grupo of grupos) {
+      if (grupo.length < 4) continue;
+      const ptsAlvo = grupo.map(p => p.pt);
+      const ptsViz  = grupo.map(p => p.near).filter(Boolean);
+      if (ptsViz.length < 4) continue;
+
+      // Regressão linear da face Alvo e da face Vizinha
+      const lineA = _fitLine(ptsAlvo);
+      const lineV = _fitLine(ptsViz);
+
+      // Centróide médio da mediana (em metros relativos ao lineA.cx,cy)
+      const mCx = (lineA.cx + lineV.cx) / 2;
+      const mCy = (lineA.cy + lineV.cy) / 2;
+
+      // Direção: média das duas direções (normalmente quase idênticas)
+      let ux = (lineA.ux + lineV.ux) / 2, uy = (lineA.uy + lineV.uy) / 2;
+      const nm = Math.sqrt(ux * ux + uy * uy);
+      ux /= nm; uy /= nm;
+
+      // Comprimento: range de projeção longitudinal dos pontos da Alvo
+      const refCx = lineA.cx, refCy = lineA.cy;
+      const projs = ptsAlvo.map(p => {
+        const m = _toM(p, refCx, refCy);
+        return m[0] * lineA.ux + m[1] * lineA.uy;
+      });
+      const lo = Math.min(...projs), hi = Math.max(...projs);
+
+      // Distância perpendicular média entre Alvo e Vizinha
+      const dists = grupo.map(p => {
+        if (!p.near) return 0;
+        const cosL = Math.cos(p.pt[1] * _radm);
+        const dx = (p.near[0] - p.pt[0]) * _radm * _Rm * cosL;
+        const dy = (p.near[1] - p.pt[1]) * _radm * _Rm;
+        return Math.sqrt(dx * dx + dy * dy);
+      });
+      const largura = dists.reduce((s, d) => s + d, 0) / dists.length;
+
+      medianLines.push({ cx: mCx, cy: mCy, ux, uy, lo, hi, largura, vizId: grupo[0].vizId, refCx, refCy });
+    }
+
+    if (medianLines.length === 0) { setMedianasStatus('warn', '⚠ Nenhuma mediana calculada.'); return; }
+
+    // ── 8. Estende cada mediana até a interseção com as adjacentes ──
+    const N = medianLines.length;
+    const extPts = medianLines.map(ml => {
+      // Converte centro para metros locais (sistema do refCx/refCy)
+      return {
+        // Ponto médio em metros (sistema global relativo ao primeiro refCx/refCy)
+        P: _toM([ml.cx, ml.cy], medianLines[0].refCx, medianLines[0].refCy),
+        D: [ml.ux, ml.uy],
+        lo: ml.lo, hi: ml.hi, largura: ml.largura, vizId: ml.vizId,
+        refCx: ml.refCx, refCy: ml.refCy, cx: ml.cx, cy: ml.cy
+      };
+    });
+
+    const finalFeatures = [];
     const resumo = [];
 
-    for (let gi = 0; gi < grupos.length; gi++) {
-      const grupo = grupos[gi];
-      if (grupo.length < 2) continue;
+    for (let i = 0; i < N; i++) {
+      const cur = extPts[i];
+      const prev = extPts[(i - 1 + N) % N];
+      const next = extPts[(i + 1) % N];
 
-      // Filtra pontos sem vizinha identificada
-      const valid = grupo.filter(p => p.nearPt);
-      if (valid.length < 2) continue;
+      // Ponto de início: interseção com mediana anterior
+      // Converte tudo para o mesmo sistema de metros (relativo ao cx/cy do cur)
+      const curP = _toM([cur.cx, cur.cy], cur.refCx, cur.refCy);
+      const prevP = _toM([prev.cx, prev.cy], cur.refCx, cur.refCy);
+      const nextP = _toM([next.cx, next.cy], cur.refCx, cur.refCy);
 
-      // Midpoints: ponto a ponto entre contorno da Alvo e ponto na Vizinha
-      const midPts = valid.map(p => [
-        (p.ptCoords[0] + p.nearPt[0]) / 2,
-        (p.ptCoords[1] + p.nearPt[1]) / 2
-      ]);
+      const tStart = _intersectLines(curP, cur.D, prevP, prev.D);
+      const tEnd   = _intersectLines(curP, cur.D, nextP, next.D);
 
-      // Distância média entre os dois lados (largura da rua)
-      const R = 6371000, rad = Math.PI / 180;
-      const larguraMedia = valid.reduce((sum, p) => {
-        const cosL = Math.cos(p.ptCoords[1] * rad);
-        const dx = (p.nearPt[0] - p.ptCoords[0]) * rad * R * cosL;
-        const dy = (p.nearPt[1] - p.ptCoords[1]) * rad * R;
-        return sum + Math.sqrt(dx * dx + dy * dy);
-      }, 0) / valid.length;
+      // Usa interseção se plausível (dentro de ~2× o comprimento da mediana), senão usa lo/hi
+      const span = cur.hi - cur.lo;
+      const useStart = tStart !== null && Math.abs(tStart - (cur.lo + cur.hi) / 2) < span * 2 ? tStart : cur.lo;
+      const useEnd   = tEnd   !== null && Math.abs(tEnd   - (cur.lo + cur.hi) / 2) < span * 2 ? tEnd   : cur.hi;
 
-      const vizId = grupo[0].vizId;
+      if (useEnd <= useStart) { resumo.push(`Face ${i + 1}: segmento inválido`); continue; }
 
-      medianFeatures.push({
+      // Gera os dois pontos extremos da mediana (em WGS84)
+      const ptStartM = [curP[0] + useStart * cur.D[0], curP[1] + useStart * cur.D[1]];
+      const ptEndM   = [curP[0] + useEnd   * cur.D[0], curP[1] + useEnd   * cur.D[1]];
+      const ptStartWGS = _fromM(ptStartM, cur.refCx, cur.refCy);
+      const ptEndWGS   = _fromM(ptEndM,   cur.refCx, cur.refCy);
+
+      const largura = Math.round(cur.largura);
+      finalFeatures.push({
         type: 'Feature',
-        geometry: { type: 'LineString', coordinates: midPts },
+        geometry: { type: 'LineString', coordinates: [ptStartWGS, ptEndWGS] },
         properties: {
           _layer: 'Envoltória · Medianas',
-          face_idx: gi + 1,
-          vizinha_id: vizId,
-          largura_m: Math.round(larguraMedia),
+          face_idx: i + 1,
+          vizinha_id: cur.vizId,
+          largura_m: largura,
           stroke: '#00ACCD',
           'stroke-width': 2,
-          label: `Face ${gi + 1} — vizinha ${vizId} (~${Math.round(larguraMedia)}m)`
+          label: `Mediana ${i + 1} (~${largura}m)`
         }
       });
-      resumo.push(`Face ${gi + 1}: ~${Math.round(larguraMedia)}m entre alinhamentos (vizinha ${vizId})`);
-      log('ok', `Mediana face ${gi + 1}: ~${Math.round(larguraMedia)}m (vizinha id=${vizId})`);
+      resumo.push(`Face ${i + 1}: ~${largura}m entre alinhamentos`);
+      log('ok', `Mediana ${i + 1}: ~${largura}m (vizinha id=${cur.vizId})`);
     }
 
-    if (medianFeatures.length === 0) {
-      setMedianasStatus('warn', '⚠ Nenhuma mediana calculada. Verifique o log.');
-      document.getElementById('medianasEmpty').style.display = 'flex';
-      return;
-    }
+    if (finalFeatures.length === 0) { setMedianasStatus('warn', '⚠ Nenhuma mediana gerada.'); return; }
 
-    // ── 8. Exporta ──
-    setMedianasStatus('loading', 'Exportando para o Giraffe...');
+    // ── 9. Exporta ──
+    setMedianasStatus('loading', 'Exportando...');
     await rpc.invoke('updateGeoJSONLayerContents', [
       'Envoltória · Medianas',
-      { type: 'FeatureCollection', features: medianFeatures }
+      { type: 'FeatureCollection', features: finalFeatures }
     ]);
 
-    const body = document.getElementById('medianasResultBody');
-    body.innerHTML = resumo.map(r =>
-      `<div style="padding:3px 0;border-bottom:1px solid var(--outline-variant)">${r}</div>`
-    ).join('') +
-      `<div style="margin-top:8px;color:var(--kv-blue);font-weight:600">${medianFeatures.length} mediana(s) → layer "Envoltória · Medianas"</div>`;
+    document.getElementById('medianasResultBody').innerHTML =
+      resumo.map(r => `<div style="padding:3px 0;border-bottom:1px solid var(--outline-variant)">${r}</div>`).join('') +
+      `<div style="margin-top:8px;color:var(--kv-blue);font-weight:600">${finalFeatures.length} mediana(s) → layer "Envoltória · Medianas"</div>`;
     document.getElementById('medianasResult').style.display = 'block';
-    setMedianasStatus('success', `${medianFeatures.length} mediana(s) gerada(s) com sucesso`);
+    setMedianasStatus('success', `${finalFeatures.length} mediana(s) gerada(s) com sucesso`);
 
   } catch (err) {
     setMedianasStatus('error', `Erro: ${err.message}`);
@@ -5120,7 +5157,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V83 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V84 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
