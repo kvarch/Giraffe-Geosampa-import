@@ -573,8 +573,9 @@
       <div class="card">
         <div class="card-label">Linhas Medianas das Ruas</div>
         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);line-height:1.6;margin-bottom:10px">
-          Calcula a linha mediana entre os alinhamentos prediais opostos de cada rua que o terreno confronta.<br>
-          Usa <strong style="color:var(--on-surface)">quadra_viaria_editada</strong> (quadra sem calçada) como limite dos lotes.
+          Calcula a linha mediana entre os alinhamentos prediais opostos de cada rua confrontante.<br>
+          Usa <strong style="color:var(--on-surface)">quadra_fiscal</strong> como limite dos lotes.<br>
+          <span style="color:var(--warn)">⚠ Execute "Ler Terreno" primeiro ou selecione o terreno no mapa.</span>
         </div>
         <button class="btn btn-primary" id="btnMedianas" onclick="runMedianas()" style="width:100%">
           📐 Gerar Linhas Medianas das Ruas
@@ -4914,30 +4915,47 @@ window.runMedianas = async function() {
   document.getElementById('medianasEmpty').style.display = 'none';
   document.getElementById('medianasResult').style.display  = 'none';
 
-  // ── Terreno ──
-  let terGeom = null;
+  // ── Terreno — ordem de prioridade ──
+  // 1. getSelectedFeatures — o que está selecionado no mapa agora (independente)
+  // 2. currentGeometry    — resultado da última varredura ("Ler Terreno")
+  // 3. _kvTerrainGeomForReport — geometria usada no último relatório gerado
+  // Não usa pickRawSections (retorna qualquer rawSection do projeto, podendo
+  // ser de outra sessão ou região).
+  let terGeom = null, terGeomSource = '';
   setMedianasStatus('loading', 'Buscando terreno selecionado...');
+
+  // 1. Seleção atual no mapa
   try {
     const sel = await rpc.invoke('getSelectedFeatures', []);
     if (sel?.length > 0) {
       const pols = sel.filter(f => f.geometry &&
         (f.geometry.type==='Polygon' || f.geometry.type==='MultiPolygon'));
-      if (pols.length > 0) { terGeom = mergeToSinglePolygon(pols); log('info', 'Medianas: terreno via getSelectedFeatures'); }
+      if (pols.length > 0) { terGeom = mergeToSinglePolygon(pols); terGeomSource = 'seleção no mapa'; }
     }
   } catch(_) {}
-  if (!terGeom && currentGeometry) { terGeom = currentGeometry; log('info', 'Medianas: terreno via currentGeometry'); }
-  if (!terGeom) {
-    setMedianasStatus('loading', 'Clique no terreno no mapa...');
-    document.getElementById('btnMedianas').disabled = true;
-    try {
-      const secs = await rpc.invoke('pickRawSections', []);
-      const geoms = (secs||[]).filter(f => f.geometry &&
-        (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
-      if (geoms.length > 0) { terGeom = mergeToSinglePolygon(geoms); log('info', 'Medianas: terreno via pick'); }
-      else { setMedianasStatus('warn', '⚠ Nenhum terreno selecionado.'); return; }
-    } catch(e) { setMedianasStatus('error', e.message); return; }
-    finally { document.getElementById('btnMedianas').disabled = false; }
+
+  // 2. currentGeometry (última varredura)
+  if (!terGeom && currentGeometry) {
+    terGeom = currentGeometry; terGeomSource = 'última varredura (Ler Terreno)';
   }
+
+  // 3. Geometria do último relatório gerado
+  if (!terGeom && window._kvTerrainGeomForReport) {
+    terGeom = window._kvTerrainGeomForReport; terGeomSource = 'último relatório gerado';
+  }
+
+  if (!terGeom) {
+    setMedianasStatus('warn', '⚠ Nenhum terreno encontrado. Selecione um terreno no mapa, execute "Ler Terreno" ou gere o Relatório primeiro.');
+    log('warn', 'Medianas: sem terreno — selecione no mapa, rode varredura ou gere relatório.');
+    return;
+  }
+
+  // Confirma no log a fonte e geometria capturada
+  try {
+    const chk = turf.centroid({type:'Feature',geometry:terGeom,properties:{}}).geometry.coordinates;
+    const aChk = turf.area({type:'Feature',geometry:terGeom,properties:{}});
+    log('info', `Medianas: terreno via ${terGeomSource} — ctr=[${chk.map(v=>v.toFixed(5))}] área=${aChk.toFixed(0)}m²`);
+  } catch(_) {}
   if (!proxyUrl) { setMedianasStatus('error', '⚠ Configure o proxy na aba ⚙ Proxy primeiro.'); return; }
 
   try {
@@ -5143,7 +5161,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V87 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V89 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
