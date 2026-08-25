@@ -4979,18 +4979,22 @@ window.runMedianas = async function(){
   document.getElementById('medianasEmpty').style.display='none';
   document.getElementById('medianasResult').style.display='none';
 
-  // ── Terreno: currentGeometry → getSelectedFeatures → pickRawSections ──
-  let terGeom=currentGeometry;
-  if(!terGeom){
-    setMedianasStatus('loading','Buscando terreno selecionado...');
-    try{
-      const sel=await rpc.invoke('getSelectedFeatures',[]);
-      if(sel?.length>0){
-        const pols=sel.filter(f=>f.geometry&&
-          (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
-        if(pols.length>0) terGeom=mergeToSinglePolygon(pols);
-      }
-    }catch(_){}
+  // ── Terreno: getSelectedFeatures → currentGeometry → pickRawSections ──
+  // getSelectedFeatures é prioritário porque currentGeometry pode estar
+  // desatualizado de uma varredura anterior em outro terreno/sessão
+  let terGeom=null;
+  setMedianasStatus('loading','Buscando terreno selecionado...');
+  try{
+    const sel=await rpc.invoke('getSelectedFeatures',[]);
+    if(sel?.length>0){
+      const pols=sel.filter(f=>f.geometry&&
+        (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
+      if(pols.length>0){ terGeom=mergeToSinglePolygon(pols); log('info','Medianas: terreno via getSelectedFeatures'); }
+    }
+  }catch(_){}
+  if(!terGeom && currentGeometry){
+    terGeom=currentGeometry;
+    log('info','Medianas: terreno via currentGeometry (última varredura)');
   }
   if(!terGeom){
     setMedianasStatus('loading','Clique no terreno no mapa...');
@@ -5063,17 +5067,17 @@ window.runMedianas = async function(){
     const quadrasViz=quadras.filter(q=>q!==quadraTer);
 
     const edgesTer=_edges(ringTer);
-    // Aresta de rua = midpoint não está sobre nenhuma quadra vizinha
-    const edgesRua=edgesTer.filter(e=>
-      e.len>2 && !_ptOnAnyQuadra(e.mid, quadrasViz, 1.5)
-    );
+    // Todas as arestas > 5m são candidatas (quadra_fiscal não compartilha bordas
+    // com vizinhas — há sempre uma rua entre elas, distância ~10-15m)
+    // Filtramos só as arestas de comprimento significativo
+    const edgesRua=edgesTer.filter(e=>e.len>5);
 
     if(edgesRua.length===0){
-      setMedianasStatus('warn','⚠ Nenhuma frente de rua detectada na quadra do terreno.');
+      setMedianasStatus('warn','⚠ Nenhuma aresta detectada na quadra do terreno.');
       document.getElementById('medianasEmpty').style.display='flex';
       return;
     }
-    log('info',`Medianas: ${edgesRua.length} aresta(s) de rua na quadra do terreno`);
+    log('info',`Medianas: ${edgesRua.length} aresta(s) na quadra do terreno`);
 
     // ── 4. Consolida arestas colineares (pode haver várias arestas pequenas na mesma face) ──
     // Agrupa arestas por direção similar (ângulo < 15°) e posição próxima
@@ -5116,33 +5120,47 @@ window.runMedianas = async function(){
     const medianFeatures=[];
     const resumo=[];
 
+    // Centróide da quadra do terreno — usado para determinar a direção exterior
+    // de cada face (perpendicular que aponta PARA FORA do centróide)
+    const terQCtr=turf.centroid({type:'Feature',geometry:quadraTer.geometry,properties:{}}).geometry.coordinates;
+
     for(let fi=0;fi<faces.length;fi++){
       const face=faces[fi];
-      const perp=_perpUnit(face.A,face.B);
 
-      // Quadra oposta: percorre distâncias de 5 a 80m na direção perpendicular
-      // e verifica qual quadra é tocada
+      // Perpendicular exterior: das duas perpendiculares à aresta, escolhe
+      // a que aponta para FORA do centróide da quadra do terreno
+      const cosLFace=Math.cos(face.mid[1]*_rad);
+      const dxFace=(face.B[0]-face.A[0])*_rad*_R*cosLFace;
+      const dyFace=(face.B[1]-face.A[1])*_rad*_R;
+      const lenFace=Math.sqrt(dxFace*dxFace+dyFace*dyFace);
+      // Duas perpendiculares candidatas (em graus)
+      const perp1=[(-dyFace/lenFace)/(cosLFace*_rad*_R), (dxFace/lenFace)/(_rad*_R)];
+      const perp2=[(dyFace/lenFace)/(cosLFace*_rad*_R), (-dxFace/lenFace)/(_rad*_R)];
+      // Vetor do centróide da quadra ao midpoint da face
+      const vcx=(face.mid[0]-terQCtr[0])*cosLFace;
+      const vcy=face.mid[1]-terQCtr[1];
+      // A perpendicular exterior é a que tem dot positivo com esse vetor
+      const dot1=(perp1[0]*cosLFace)*vcx+(perp1[1])*vcy;
+      const perp=dot1>=0?perp1:perp2;
+
+      // Quadra oposta: a mais próxima na direção perpendicular exterior
       let quadraOp=null;
-      let minDist=Infinity;
+      let bestScore=Infinity;
       for(const q of quadrasViz){
-        const ring=_outer(q.geometry);
-        if(!ring) continue;
-        // Distância do centróide da quadra ao midpoint da face
         const qCtr=turf.centroid(q).geometry.coordinates;
         const dist=_gd(qCtr,face.mid);
-        if(dist>120) continue; // muito longe
+        if(dist>150||dist<5) continue;
 
-        // Verifica que a quadra está "do lado de fora" (direção perpendicular da face)
-        // Produto escalar da direção perp com o vetor face.mid→qCtr
+        // Verifica alinhamento com a perpendicular exterior
         const cosL=Math.cos(face.mid[1]*_rad);
         const vx=(qCtr[0]-face.mid[0])*cosL, vy=qCtr[1]-face.mid[1];
         const vn=Math.sqrt(vx*vx+vy*vy);
         if(vn<0.001) continue;
-        const dot=(vx/vn)*(perp[0]*cosL)+(vy/vn)*perp[1];
-        // dot > 0 significa que a quadra está na direção da perpendicular exterior
-        if(dot<0.3) continue;
+        const dotQ=(vx/vn)*(perp[0]*cosL)+(vy/vn)*perp[1];
+        if(dotQ<0.25) continue; // descarta quadras em direção errada
 
-        if(dist<minDist){ minDist=dist; quadraOp=q; }
+        const score=dist/(dotQ+0.01);
+        if(score<bestScore){ bestScore=score; quadraOp=q; }
       }
 
       if(!quadraOp){
@@ -5216,7 +5234,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V81 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V82 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
