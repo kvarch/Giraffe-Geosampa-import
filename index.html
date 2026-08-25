@@ -4797,11 +4797,19 @@ window.exportReportPDF = async function() {
 
 
 // ══════════════════════════════════════════════════════════════════
-// ENVOLTÓRIA — LINHAS MEDIANAS DAS RUAS
-// Fonte: geoportal:calcada (Polygon, com cd_logradouro)
-// As calçadas que tocam o terreno identificam as ruas confrontantes.
-// Para cada rua: borda interna calçada A (lado terreno) × borda interna
-// calçada B (lado oposto) → midpoints ao longo = linha mediana predial.
+// ENVOLTÓRIA — LINHAS MEDIANAS DAS RUAS  (v2)
+// 
+// Fonte: geoportal:calcada (Polygon) + geoportal:segmento_logradouro (LineString)
+//
+// Algoritmo:
+//  1. Busca calçadas em 2m ao redor do terreno → identificam as frentes de rua
+//     via cd_identificador_segmento_logradouro (único por segmento)
+//  2. Para cada segmento confrontante: busca todas as calçadas com aquele seg_id
+//  3. Separa lado A (toca terreno) × lado B (não toca)
+//  4. Borda interna = arestas do polígono da calçada mais distantes do eixo do
+//     segmento de logradouro (LineString) — separação por distância ponto→linha
+//  5. Mediana: amostra N pontos ao longo de cada borda interna → midpoint
+//  6. Exporta "Envoltória · Medianas" via updateGeoJSONLayerContents
 // ══════════════════════════════════════════════════════════════════
 
 function setMedianasStatus(state, msg) {
@@ -4813,134 +4821,159 @@ function setMedianasStatus(state, msg) {
   el.textContent = msg;
 }
 
-// Distância geodésica em metros entre dois pares [lng,lat]
-function _geoDistM(a, b) {
-  const R = 6371000, toR = Math.PI/180;
-  const dLat = (b[1]-a[1])*toR, dLng = (b[0]-a[0])*toR;
-  const s = Math.sin(dLat/2)**2 + Math.cos(a[1]*toR)*Math.cos(b[1]*toR)*Math.sin(dLng/2)**2;
+// Distância geodésica em metros entre [lng,lat] e [lng,lat]
+function _gdist(a, b) {
+  const R=6371000, r=Math.PI/180;
+  const dLat=(b[1]-a[1])*r, dLng=(b[0]-a[0])*r;
+  const s=Math.sin(dLat/2)**2+Math.cos(a[1]*r)*Math.cos(b[1]*r)*Math.sin(dLng/2)**2;
   return R*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s));
 }
 
-// Comprimento total de um array de coords [[lng,lat],...]
-function _ringLen(coords) {
+// Distância de ponto P a segmento AB (em graus, mas usamos metros via escala lat)
+function _distPtSeg(P, A, B) {
+  // Converte para metros locais (plano tangente)
+  const R=6371000, r=Math.PI/180;
+  const cosLat = Math.cos(((A[1]+B[1])/2)*r);
+  const ax=(A[0]-P[0])*r*R*cosLat, ay=(A[1]-P[1])*r*R;
+  const bx=(B[0]-P[0])*r*R*cosLat, by=(B[1]-P[1])*r*R;
+  const dx=bx-ax, dy=by-ay;
+  const len2=dx*dx+dy*dy;
+  if(len2===0) return Math.sqrt(ax*ax+ay*ay);
+  const t=Math.max(0,Math.min(1,-(ax*dx+ay*dy)/len2));
+  const cx=ax+t*dx, cy=ay+t*dy;
+  return Math.sqrt(cx*cx+cy*cy);
+}
+
+// Distância mínima de ponto P a uma polyline [[lng,lat],...]
+function _distPtLine(P, line) {
+  let minD=Infinity;
+  for(let i=0;i<line.length-1;i++){
+    const d=_distPtSeg(P,line[i],line[i+1]);
+    if(d<minD) minD=d;
+  }
+  return minD;
+}
+
+// Comprimento total de uma polyline
+function _polyLen(pts) {
   let t=0;
-  for(let i=0;i<coords.length-1;i++) t+=_geoDistM(coords[i],coords[i+1]);
+  for(let i=0;i<pts.length-1;i++) t+=_gdist(pts[i],pts[i+1]);
   return t;
 }
 
-// Interpola ponto na fração t [0..1] ao longo de um array de coords
-function _interpCoords(coords, t) {
-  const total = _ringLen(coords);
-  let target = t*total, acc=0;
-  for(let i=0;i<coords.length-1;i++){
-    const seg = _geoDistM(coords[i],coords[i+1]);
-    if(acc+seg>=target || i===coords.length-2){
-      const u = seg>0 ? Math.min(1,(target-acc)/seg) : 0;
-      return [ coords[i][0]+u*(coords[i+1][0]-coords[i][0]),
-               coords[i][1]+u*(coords[i+1][1]-coords[i][1]) ];
+// Interpola ponto na fração t [0..1] ao longo de uma polyline
+function _interp(pts, t) {
+  const total=_polyLen(pts);
+  let target=t*total, acc=0;
+  for(let i=0;i<pts.length-1;i++){
+    const seg=_gdist(pts[i],pts[i+1]);
+    if(acc+seg>=target||i===pts.length-2){
+      const u=seg>0?Math.min(1,(target-acc)/seg):0;
+      return [pts[i][0]+u*(pts[i+1][0]-pts[i][0]),
+              pts[i][1]+u*(pts[i+1][1]-pts[i][1])];
     }
     acc+=seg;
   }
-  return coords[coords.length-1].slice(0,2);
+  return pts[pts.length-1].slice(0,2);
 }
 
-// Extrai anel exterior de qualquer Polygon/MultiPolygon
+// Dado o anel de uma calçada e o eixo do seu segmento de logradouro,
+// extrai os vértices do lado INTERNO (mais distante do eixo = lado lote).
+// Estratégia:
+//  - Classifica cada vértice como "próximo do eixo" ou "distante do eixo"
+//    usando a mediana das distâncias como limiar
+//  - Os vértices distantes formam a borda interna (lado lote)
+//  - Extrai o sub-arco contíguo desses vértices
+function _innerBorder(ring, axisLine) {
+  const verts = ring.slice(0, ring.length-1); // exclui ponto repetido
+  const dists = verts.map(v => _distPtLine(v, axisLine));
+
+  // Mediana das distâncias como threshold
+  const sorted = [...dists].sort((a,b)=>a-b);
+  const median = sorted[Math.floor(sorted.length/2)];
+
+  // Marca vértices acima da mediana como "interno"
+  const isInner = dists.map(d => d >= median);
+
+  // Encontra o sub-arco contíguo de vértices internos mais longo
+  // (handle wrap-around)
+  const n = verts.length;
+  let bestStart=-1, bestLen=0;
+  let curStart=-1, curLen=0;
+  for(let pass=0;pass<2;pass++){ // 2 passes para wrap
+    for(let i=0;i<n;i++){
+      const idx=(i)%n;
+      if(isInner[idx]){
+        if(curStart===-1) curStart=(curStart===-1)?idx:curStart;
+        if(curLen===0) curStart=idx;
+        curLen++;
+        if(curLen>bestLen){ bestLen=curLen; bestStart=curStart; }
+      } else {
+        curLen=0; curStart=-1;
+      }
+    }
+  }
+
+  if(bestStart===-1||bestLen<1){
+    // Fallback: retorna metade mais distante
+    const halfN=Math.ceil(n/2);
+    const startIdx=sorted.indexOf(sorted[sorted.length-1]); // idx do mais distante
+    const arc=[];
+    for(let i=0;i<halfN;i++) arc.push(verts[(startIdx+i)%n]);
+    return arc;
+  }
+
+  // Extrai o sub-arco
+  const arc=[];
+  for(let i=0;i<bestLen+1;i++) arc.push(verts[(bestStart+i)%n]); // +1 para fechar
+  return arc;
+}
+
+// Anel exterior de Polygon ou MultiPolygon
 function _outerRing(geom) {
   if(geom.type==='Polygon') return geom.coordinates[0];
   if(geom.type==='MultiPolygon') return geom.coordinates[0][0];
   return null;
 }
 
-// Dado o anel de uma calçada, retorna a sub-cadeia de vértices que forma
-// a borda interna (lado dos lotes = borda mais distante do centróide da rua).
-// Estratégia:
-//   1. Calcula centróide do anel da calçada
-//   2. Acha o vértice mais distante do centróide → ponto "interior" (lado lote)
-//   3. Acha o vértice mais próximo do centróide → ponto "exterior" (lado rua)
-//   4. Extrai sub-cadeia que contém o vértice mais distante (o arco "interno")
-function _innerEdgeOfCalcada(ring) {
-  const n = ring.length-1; // anel fechado
-  const verts = ring.slice(0,n);
-
-  // centróide simples
-  const cx = verts.reduce((s,p)=>s+p[0],0)/n;
-  const cy = verts.reduce((s,p)=>s+p[1],0)/n;
-  const ctr = [cx,cy];
-
-  // distâncias de cada vértice ao centróide
-  const dists = verts.map(p => _geoDistM(p,ctr));
-
-  // índices do mais próximo (lado rua) e mais distante (lado lote)
-  let iMax=0, iMin=0;
-  dists.forEach((d,i)=>{ if(d>dists[iMax]) iMax=i; if(d<dists[iMin]) iMin=i; });
-
-  // Sub-arco que contém iMax sem passar por iMin:
-  // percorremos a partir de iMin+1 até chegar de volta a iMin, guardando o arco
-  // que contém iMax.
-  // Há dois arcos entre iMin e iMax; queremos o que contém o ponto mais distante.
-  // Arco A: iMin → iMax (sentido crescente)
-  // Arco B: iMax → iMin (sentido crescente, wrap)
-  const arcA = [];
-  for(let i=iMin; ; i=(i+1)%n){
-    arcA.push(verts[i]);
-    if(i===iMax) break;
-    if(arcA.length>n+1) break; // segurança
-  }
-  const arcB = [];
-  for(let i=iMax; ; i=(i+1)%n){
-    arcB.push(verts[i]);
-    if(i===iMin) break;
-    if(arcB.length>n+1) break;
-  }
-
-  // O arco interno é o MENOR (mais próximo do limite do lote, menos vértices em geral)
-  // Na prática a calçada é estreita: o arco "lado lote" costuma ser mais longo em metros
-  // mas pode ter menos vértices. Usamos comprimento em metros.
-  const lenA = _ringLen(arcA);
-  const lenB = _ringLen(arcB);
-
-  // Retorna o arco mais LONGO (lado lote = frente maior)
-  return lenA >= lenB ? arcA : arcB;
-}
-
 window.runMedianas = async function() {
-  document.getElementById('medianasEmpty').style.display = 'none';
-  document.getElementById('medianasResult').style.display = 'none';
+  document.getElementById('medianasEmpty').style.display='none';
+  document.getElementById('medianasResult').style.display='none';
 
   // ── Garante terreno ──
   let terGeom = currentGeometry;
-  if (!terGeom) {
-    const raw = giraffeState.get('rawSections');
-    if (raw?.features?.length > 0) {
-      const pols = raw.features.filter(f => f.geometry &&
+  if(!terGeom){
+    const raw=giraffeState.get('rawSections');
+    if(raw?.features?.length>0){
+      const pols=raw.features.filter(f=>f.geometry&&
         (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
-      if(pols.length>0) terGeom = mergeToSinglePolygon(pols);
+      if(pols.length>0) terGeom=mergeToSinglePolygon(pols);
     }
   }
-  if (!terGeom) {
+  if(!terGeom){
     setMedianasStatus('loading','Clique no terreno no mapa...');
-    document.getElementById('btnMedianas').disabled = true;
-    try {
-      const secs = await rpc.invoke('pickRawSections',[]);
-      const geoms = (secs||[]).filter(f=>f.geometry&&(f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
+    document.getElementById('btnMedianas').disabled=true;
+    try{
+      const secs=await rpc.invoke('pickRawSections',[]);
+      const geoms=(secs||[]).filter(f=>f.geometry&&
+        (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
       if(geoms.length>0){ terGeom=mergeToSinglePolygon(geoms); }
       else{ setMedianasStatus('warn','⚠ Nenhum terreno selecionado.'); return; }
-    } catch(e){ setMedianasStatus('error',e.message); return; }
+    }catch(e){ setMedianasStatus('error',e.message); return; }
     finally{ document.getElementById('btnMedianas').disabled=false; }
   }
-
   if(!proxyUrl){ setMedianasStatus('error','⚠ Configure o proxy na aba ⚙ Proxy primeiro.'); return; }
 
-  try {
-    // ── 1. Busca calçadas no buffer de 200m ──
-    setMedianasStatus('loading','Buscando calçadas (geoportal:calcada)...');
-    const buf200 = turfBuffer(terGeom, 200);
-    const bb = turf.bbox(buf200);
-    const bboxObj = { minX:bb[0], minY:bb[1], maxX:bb[2], maxY:bb[3] };
-    const wkt200  = geojsonToWKT(buf200);
+  try{
+    // ── 1. Calçadas que tocam o terreno (buffer 2m) ──
+    setMedianasStatus('loading','Buscando calçadas confrontantes...');
+    const terBuf2  = turfBuffer(terGeom, 2);
+    const terBuf60 = turfBuffer(terGeom, 60); // para pegar calçadas do outro lado da rua
+    const wkt60    = geojsonToWKT(terBuf60);
 
-    const gjCalc = await fetchWFSByGeom('geoportal:calcada', wkt200, 500);
-    const calcadas = (gjCalc?.features||[]).filter(f=>
+    // Busca todas as calçadas num raio de 60m
+    const gjCalc = await fetchWFSByGeom('geoportal:calcada', wkt60, 300);
+    const calcadas=(gjCalc?.features||[]).filter(f=>
       f.geometry&&(f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
 
     if(calcadas.length===0){
@@ -4948,133 +4981,163 @@ window.runMedianas = async function() {
       document.getElementById('medianasEmpty').style.display='flex';
       return;
     }
-    log('info',`Medianas: ${calcadas.length} calçadas encontradas`);
+    log('info',`Medianas: ${calcadas.length} calçadas em 60m`);
 
-    // ── 2. Calçadas que tocam o terreno → ruas confrontantes ──
-    setMedianasStatus('loading','Identificando ruas confrontantes...');
-    const terFeat = { type:'Feature', geometry:terGeom, properties:{} };
-    // Buffer pequeno ao redor do terreno para pegar calçadas adjacentes
-    const terBuf2 = turfBuffer(terGeom, 2);
-    const terBufFeat = { type:'Feature', geometry:terBuf2, properties:{} };
+    const terBuf2Feat={type:'Feature',geometry:terBuf2,properties:{}};
 
-    const calcadasTocam = calcadas.filter(c => {
-      try{ return turf.booleanIntersects(terBufFeat, c); }catch(_){ return false; }
+    // Calçadas que tocam o terreno → segmentos confrontantes
+    const calcadasTocam=calcadas.filter(c=>{
+      try{ return turf.booleanIntersects(terBuf2Feat,c); }catch(_){ return false; }
     });
 
     if(calcadasTocam.length===0){
-      setMedianasStatus('warn','⚠ Nenhuma calçada toca o terreno — verifique se o terreno está na área correta.');
+      setMedianasStatus('warn','⚠ Nenhuma calçada toca o terreno.');
       document.getElementById('medianasEmpty').style.display='flex';
       return;
     }
 
-    // cd_logradouro únicos das ruas confrontantes
-    const logradourosConfrontantes = [...new Set(
-      calcadasTocam.map(c=>c.properties.cd_logradouro).filter(Boolean)
+    // IDs únicos de segmentos confrontantes
+    const segIds=[...new Set(
+      calcadasTocam
+        .map(c=>c.properties.cd_identificador_segmento_logradouro)
+        .filter(id=>id!=null)
     )];
-    log('info',`Medianas: ${logradourosConfrontantes.length} rua(s) confrontante(s): ${logradourosConfrontantes.join(', ')}`);
-    setMedianasStatus('loading',`${logradourosConfrontantes.length} rua(s) identificada(s) — calculando medianas...`);
 
-    // ── 3. Para cada logradouro: calçadas do lado do terreno × lado oposto ──
-    const medianFeatures = [];
-    const resumo = [];
+    log('info',`Medianas: ${segIds.length} segmento(s) confrontante(s): ${segIds.join(', ')}`);
+    setMedianasStatus('loading',`${segIds.length} frente(s) de rua — calculando medianas...`);
 
-    for(const codlog of logradourosConfrontantes){
-      // Todas as calçadas desse logradouro na área buscada
-      const calcadasRua = calcadas.filter(c=>c.properties.cd_logradouro===codlog);
-      const nmLogr = calcadasRua[0]?.properties?.nm_logradouro || codlog;
+    // ── 2. Para cada segmento: busca eixo + calçadas opostas ──
+    const medianFeatures=[];
+    const resumo=[];
 
-      // Lado do terreno = as que tocam o terreno
-      const ladoA = calcadasRua.filter(c=>{
-        try{ return turf.booleanIntersects(terBufFeat,c); }catch(_){ return false; }
+    for(const segId of segIds){
+      // Calçadas desse segmento no buffer 60m
+      const calcadasSeg=calcadas.filter(c=>
+        c.properties.cd_identificador_segmento_logradouro===segId);
+
+      const nmLogr=calcadasSeg[0]?.properties?.nm_logradouro||`seg ${segId}`;
+
+      // Lado A = toca o terreno, Lado B = não toca
+      const ladoA=calcadasSeg.filter(c=>{
+        try{ return turf.booleanIntersects(terBuf2Feat,c); }catch(_){ return false; }
       });
-      // Lado oposto = as do mesmo logradouro que NÃO tocam o terreno
-      const ladoB = calcadasRua.filter(c=>{
-        try{ return !turf.booleanIntersects(terBufFeat,c); }catch(_){ return true; }
+      const ladoB=calcadasSeg.filter(c=>{
+        try{ return !turf.booleanIntersects(terBuf2Feat,c); }catch(_){ return true; }
       });
 
-      if(ladoA.length===0||ladoB.length===0){
-        log('warn',`Medianas: ${nmLogr} — calçada de um lado não encontrada (A:${ladoA.length} B:${ladoB.length})`);
-        resumo.push(`${nmLogr}: calçada oposta não encontrada`);
+      if(ladoA.length===0){
+        log('warn',`Medianas: seg ${segId} (${nmLogr}) — sem calçada lado A`);
+        resumo.push(`${nmLogr}: sem calçada no lado do terreno`);
+        continue;
+      }
+      if(ladoB.length===0){
+        log('warn',`Medianas: seg ${segId} (${nmLogr}) — sem calçada lado B (oposto)`);
+        resumo.push(`${nmLogr}: calçada oposta não encontrada (rua com único calçamento?)`);
         continue;
       }
 
-      // Une todas as calçadas de cada lado em um MultiPolygon simples para extrair borda
-      // Estratégia: pega a maior calçada de cada lado (por área) para extrair a borda interna
-      const maiorA = ladoA.sort((a,b)=>{
-        try{ return turf.area(b)-turf.area(a); }catch(_){ return 0; }
-      })[0];
-      const maiorB = ladoB.sort((a,b)=>{
-        try{ return turf.area(b)-turf.area(a); }catch(_){ return 0; }
-      })[0];
+      // ── 3. Busca o eixo do segmento de logradouro ──
+      // O eixo é usado para classificar qual borda da calçada é "interna"
+      let axisLine=null;
+      try{
+        const gjSeg=await fetchWFSByGeom(
+          'geoportal:segmento_logradouro',
+          geojsonToWKT(turfBuffer(turf.centroid(ladoA[0]),0.1)), // buffer 100m ao redor da calçada
+          10
+        );
+        const segMatch=(gjSeg?.features||[]).find(f=>
+          f.properties?.cd_identificador===segId||
+          f.properties?.cd_identificador===Number(segId)
+        );
+        if(segMatch) axisLine=segMatch.geometry.coordinates;
+      }catch(_){}
 
-      const ringA = _outerRing(maiorA.geometry);
-      const ringB = _outerRing(maiorB.geometry);
+      // Fallback: cria eixo sintético conectando centróides das calçadas A e B
+      if(!axisLine){
+        const cA=turf.centroid(ladoA[0]).geometry.coordinates;
+        const cB=turf.centroid(ladoB[0]).geometry.coordinates;
+        axisLine=[cA,cB];
+        log('warn',`Medianas: seg ${segId} — eixo sintético (centróide A↔B)`);
+      }
+
+      // ── 4. Borda interna de cada calçada ──
+      // Usa a calçada mais longa de cada lado (maior comprimento de borda)
+      const maiorA=ladoA.reduce((best,c)=>{
+        const r=_outerRing(c.geometry);
+        return r&&_polyLen(r)>_polyLen(_outerRing(best.geometry)||[[0,0]])?c:best;
+      },ladoA[0]);
+      const maiorB=ladoB.reduce((best,c)=>{
+        const r=_outerRing(c.geometry);
+        return r&&_polyLen(r)>_polyLen(_outerRing(best.geometry)||[[0,0]])?c:best;
+      },ladoB[0]);
+
+      const ringA=_outerRing(maiorA.geometry);
+      const ringB=_outerRing(maiorB.geometry);
       if(!ringA||!ringB){ resumo.push(`${nmLogr}: anel inválido`); continue; }
 
-      // Borda interna de cada calçada (lado lote)
-      const edgeA = _innerEdgeOfCalcada(ringA);
-      const edgeB = _innerEdgeOfCalcada(ringB);
+      const edgeA=_innerBorder(ringA, axisLine);
+      const edgeB=_innerBorder(ringB, axisLine);
 
       if(edgeA.length<2||edgeB.length<2){
         resumo.push(`${nmLogr}: borda interna inválida`);
         continue;
       }
 
-      // ── 4. Linha mediana por amostragem de midpoints ──
-      const SAMPLES = 80;
-      const medPts = [];
+      // ── 5. Linha mediana por amostragem ──
+      const SAMPLES=60;
+      const medPts=[];
       for(let i=0;i<=SAMPLES;i++){
-        const t = i/SAMPLES;
-        const pA = _interpCoords(edgeA, t);
-        const pB = _interpCoords(edgeB, t);
-        medPts.push([ (pA[0]+pB[0])/2, (pA[1]+pB[1])/2 ]);
+        const t=i/SAMPLES;
+        const pA=_interp(edgeA,t);
+        const pB=_interp(edgeB,t);
+        medPts.push([(pA[0]+pB[0])/2,(pA[1]+pB[1])/2]);
       }
 
-      // Largura da rua ≈ distância entre midpoints centrais das bordas internas
-      const mA = _interpCoords(edgeA, 0.5);
-      const mB = _interpCoords(edgeB, 0.5);
-      const largura = Math.round(_geoDistM(mA,mB));
+      // Largura = distância entre midpoints centrais das bordas internas
+      const mA=_interp(edgeA,0.5);
+      const mB=_interp(edgeB,0.5);
+      const largura=Math.round(_gdist(mA,mB));
 
       medianFeatures.push({
         type:'Feature',
-        geometry:{ type:'LineString', coordinates:medPts },
+        geometry:{type:'LineString',coordinates:medPts},
         properties:{
           _layer:'Envoltória · Medianas',
-          nm_logradouro: nmLogr,
-          cd_logradouro: codlog,
-          largura_entre_lotes_m: largura,
+          nm_logradouro:nmLogr,
+          cd_segmento:segId,
+          largura_entre_lotes_m:largura,
           stroke:'#00ACCD',
           'stroke-width':2,
-          label:`${nmLogr} — ~${largura}m entre lotes`
+          label:`${nmLogr} (~${largura}m entre lotes)`
         }
       });
 
-      resumo.push(`${nmLogr}: mediana gerada · ~${largura}m entre alinhamentos`);
-      log('ok',`Mediana ${nmLogr}: ~${largura}m entre alinhamentos prediais`);
+      resumo.push(`${nmLogr}: ~${largura}m entre alinhamentos prediais`);
+      log('ok',`Mediana ${nmLogr}: ~${largura}m (seg ${segId})`);
     }
 
     if(medianFeatures.length===0){
-      setMedianasStatus('warn','⚠ Nenhuma mediana pôde ser calculada. Verifique o log.');
+      setMedianasStatus('warn','⚠ Nenhuma mediana calculada. Verifique o log.');
       document.getElementById('medianasEmpty').style.display='flex';
       return;
     }
 
-    // ── 5. Exporta ──
+    // ── 6. Exporta ──
     setMedianasStatus('loading','Exportando para o Giraffe...');
     await rpc.invoke('updateGeoJSONLayerContents',[
       'Envoltória · Medianas',
-      { type:'FeatureCollection', features:medianFeatures }
+      {type:'FeatureCollection',features:medianFeatures}
     ]);
 
-    const body = document.getElementById('medianasResultBody');
-    body.innerHTML = resumo.map(r=>
+    const body=document.getElementById('medianasResultBody');
+    body.innerHTML=resumo.map(r=>
       `<div style="padding:3px 0;border-bottom:1px solid var(--outline-variant)">${r}</div>`
     ).join('')+
     `<div style="margin-top:8px;color:var(--kv-blue);font-weight:600">${medianFeatures.length} mediana(s) → layer "Envoltória · Medianas"</div>`;
     document.getElementById('medianasResult').style.display='block';
     setMedianasStatus('success',`${medianFeatures.length} mediana(s) gerada(s) com sucesso`);
 
-  } catch(err) {
+  }catch(err){
     setMedianasStatus('error',`Erro: ${err.message}`);
     log('err',`Medianas: ${err.message}`);
     console.error('[Medianas]',err);
@@ -5086,7 +5149,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V78 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V79 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
