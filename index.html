@@ -5406,28 +5406,49 @@ window.runEnvoltoria = async function() {
     }
     log('ok', `Envoltória: pack encontrado — "${targetPack.name||targetPack.title}"`);
 
-    // ── 2. Lê o conteúdo do pack para extrair o template de rawSection ──
+    // ── 2. Lê o conteúdo do pack para extrair usage e flow ──
     setMedianasStatus('loading', 'Lendo conteúdo do pack...');
     const packRef = targetPack.url || targetPack.fileId || targetPack.id;
     const contents = await rpc.invoke('fetchPackContents', [packRef]);
     log('info', `Envoltória: estrutura do pack: ${JSON.stringify(Object.keys(contents||{}))}`);
 
-    // O pack contém rawSections (features pré-configuradas com usage + flow)
-    // Pega o primeiro feature do pack como template
-    const features = contents?.rawSections?.features
-      || contents?.features
-      || (Array.isArray(contents?.rawSections) ? contents.rawSections : null)
-      || [];
+    // O pack tem: { layerTree, sections, usages: [...], flows: [...] }
+    // Extrai o primeiro usage com nome que contenha "envelope" ou "envolt"
+    const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
 
-    const templateFeature = Array.isArray(features) ? features[0]
-      : Object.values(features)[0];
+    const usagesArr = Array.isArray(contents?.usages)
+      ? contents.usages
+      : Object.values(contents?.usages || {});
 
-    if (!templateFeature) {
-      log('warn', `Envoltória: estrutura completa do pack: ${JSON.stringify(contents).slice(0,500)}`);
-      setMedianasStatus('error', '⚠ Nenhum feature encontrado no pack. Veja o log.');
+    const flowsArr = Array.isArray(contents?.flows)
+      ? contents.flows
+      : Object.values(contents?.flows || {});
+
+    log('info', `Envoltória: ${usagesArr.length} usage(s), ${flowsArr.length} flow(s)`);
+    usagesArr.forEach((u,i) => log('info', `  usage[${i}]: name="${u.name||u.title||u.id}" id=${u.id}`));
+    flowsArr.forEach((f,i) => log('info', `  flow[${i}]: name="${f.name||f.title||f.id}" id=${f.id}`));
+
+    // Pega o primeiro usage (são normalmente 1 por pack)
+    const targetUsage = usagesArr.find(u =>
+      normalize(u.name||u.title||u.id||'').includes('envelope') ||
+      normalize(u.name||u.title||u.id||'').includes('envolt')
+    ) || usagesArr[0];
+
+    const targetFlow = flowsArr.find(f =>
+      normalize(f.name||f.title||f.id||'').includes('buildable') ||
+      normalize(f.name||f.title||f.id||'').includes('envelope') ||
+      normalize(f.name||f.title||f.id||'').includes('envolt')
+    ) || flowsArr[0];
+
+    if (!targetUsage) {
+      log('warn', `Envoltória: nenhum usage encontrado no pack.`);
+      setMedianasStatus('error', '⚠ Usage não encontrado no pack. Veja o log.');
       return;
     }
-    log('ok', `Envoltória: template extraído — usage="${templateFeature.properties?.usage||'(sem usage)'}", flow="${templateFeature.properties?.flowId||'(sem flow)'}", props=${JSON.stringify(Object.keys(templateFeature.properties||{}))}`);
+
+    const usageName = targetUsage.name || targetUsage.title || targetUsage.id;
+    const flowId    = targetFlow?.id || targetFlow?.flowId || null;
+    log('ok', `Envoltória: usage="${usageName}" flowId=${flowId}`);
 
     // ── 3. Monta polígono da envoltória a partir dos endpoints das medianas ──
     setMedianasStatus('loading', 'Calculando polígono da envoltória...');
@@ -5458,40 +5479,36 @@ window.runEnvoltoria = async function() {
     }
     log('info', `Envoltória: polígono com ${outerPts.length-1} vértices`);
 
-    // ── 4. Clona o template substituindo a geometria ──
+    // ── 4. Monta o feature com usage e flow do pack ──
     const envFeature = {
       type: 'Feature',
       geometry: { type: 'Polygon', coordinates: [outerPts] },
       properties: {
-        ...templateFeature.properties,
-        layerId: templateFeature.properties?.layerId || 'default',
-        sp_tag: 'kv_envoltoria_recuos'
+        layerId: 'default',
+        usage: usageName,
+        sp_tag: 'kv_envoltoria_recuos',
+        ...(flowId ? { flowId } : {})
       }
     };
-    // Remove campos que não devem ser copiados (IDs antigos, posição, etc.)
-    delete envFeature.properties.id;
-    delete envFeature.properties.projectId;
 
-    // ── 5. Importa o pack no projeto (garante que usages/flows estejam disponíveis) ──
-    setMedianasStatus('loading', 'Importando pack no projeto...');
+    // ── 5. Garante que o pack esteja no projeto ──
+    setMedianasStatus('loading', 'Adicionando pack ao projeto...');
     try {
       await rpc.invoke('addContentPackToProject', [packRef]);
       log('ok', 'Pack adicionado ao projeto.');
     } catch(e) {
-      // Pack pode já estar no projeto — continua mesmo assim
       log('warn', `addContentPackToProject: ${e.message} (continuando...)`);
     }
 
-    // ── 6. Importa o rawSection com o polígono da envoltória ──
+    // ── 6. Importa o rawSection ──
     setMedianasStatus('loading', 'Importando envoltória no Giraffe...');
     await rpc.invoke('importRawSections', [{
       type: 'FeatureCollection',
       features: [envFeature]
     }]);
 
-    const usageName = envFeature.properties?.usage || 'Envelope';
     setMedianasStatus('success', `✓ Envoltória "${usageName}" criada no Giraffe.`);
-    log('ok', `Envoltória importada com usage "${usageName}".`);
+    log('ok', `Envoltória importada — usage="${usageName}" flowId=${flowId}.`);
 
   } catch(err) {
     setMedianasStatus('error', `Erro: ${err.message}`);
@@ -5505,7 +5522,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V101 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V102 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
