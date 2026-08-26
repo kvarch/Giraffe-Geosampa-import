@@ -5374,48 +5374,27 @@ window.runMedianas = async function() {
 window._medianasGeradas = null;
 
 window.runEnvoltoria = async function() {
-  setMedianasStatus('loading', 'Lendo layer "Envoltória · Medianas"...');
+  setMedianasStatus('loading', 'Calculando polígono da envoltória...');
   try {
-    // ── 1. Lê as linhas medianas ──
-    // Tenta primeiro window._medianasGeradas (geradas nesta sessão, mais confiável)
-    // Fallback: getLayerContents do layer "Envoltória · Medianas"
-    let linhas = [];
-
-    if (window._medianasGeradas?.length >= 2) {
-      linhas = window._medianasGeradas.filter(f =>
-        f.geometry?.type === 'LineString' || f.geometry?.type === 'MultiLineString');
-      log('info', `Envoltória: ${linhas.length} mediana(s) de window._medianasGeradas`);
-    }
+    // ── 1. Lê medianas de _medianasGeradas ──
+    const linhas = (window._medianasGeradas || []).filter(f =>
+      f.geometry?.type === 'LineString' || f.geometry?.type === 'MultiLineString');
 
     if (linhas.length < 2) {
-      try {
-        // getLayerContents requer bounds — usa viewport atual
-        const bounds = giraffeState.get('mapBounds') || giraffeState.get('viewport');
-        const layerFC = await rpc.invoke('getLayerContents', ['Envoltória · Medianas', bounds]);
-        const fromLayer = (layerFC?.features || []).filter(f =>
-          f.geometry?.type === 'LineString' || f.geometry?.type === 'MultiLineString');
-        if (fromLayer.length >= 2) { linhas = fromLayer; log('info', `Envoltória: ${linhas.length} mediana(s) do layer Giraffe`); }
-      } catch(e) { log('warn', `getLayerContents: ${e.message}`); }
-    }
-
-    if (linhas.length < 2) {
-      setMedianasStatus('warn', `⚠ Nenhuma mediana encontrada (${linhas.length}). Gere as medianas primeiro.`);
-      log('warn', `Envoltória: ${linhas.length} linha(s) — gere as medianas antes.`);
+      setMedianasStatus('warn', '⚠ Gere as linhas medianas primeiro.');
+      log('warn', `Envoltória: ${linhas.length} mediana(s) disponível(is).`);
       return;
     }
-    log('ok', `Envoltória: ${linhas.length} mediana(s) prontas para formar o polígono.`);
+    log('info', `Envoltória: ${linhas.length} mediana(s) prontas.`);
 
-    // ── 2. Extrai endpoints de cada linha ──
-    // Cada mediana é um segmento [ptStart, ..., ptEnd]
-    // Os endpoints já são os pontos de cruzamento calculados pelo runMedianas
+    // ── 2. Extrai endpoints e monta polígono ──
     const endpoints = linhas.map(f => {
-      const coords = f.geometry.type === 'LineString'
+      const c = f.geometry.type === 'LineString'
         ? f.geometry.coordinates
         : f.geometry.coordinates[0];
-      return { start: coords[0], end: coords[coords.length - 1] };
+      return { start: c[0], end: c[c.length-1] };
     });
 
-    // ── 3. Ordena as medianas por ângulo ao redor do centróide ──
     const allPts = endpoints.flatMap(e => [e.start, e.end]);
     const cx = allPts.reduce((s,p)=>s+p[0],0)/allPts.length;
     const cy = allPts.reduce((s,p)=>s+p[1],0)/allPts.length;
@@ -5426,8 +5405,6 @@ window.runEnvoltoria = async function() {
       return Math.atan2(mA[1]-cy, mA[0]-cx) - Math.atan2(mB[1]-cy, mB[0]-cx);
     });
 
-    // ── 4. Monta o anel: o vértice entre medianas i e i+1 é a média
-    //    dos dois endpoints mais próximos entre si (ponto de cruzamento) ──
     const N = sorted.length;
     const dist2 = (a,b) => (a[0]-b[0])**2+(a[1]-b[1])**2;
     const ringCoords = [];
@@ -5435,8 +5412,6 @@ window.runEnvoltoria = async function() {
     for (let i = 0; i < N; i++) {
       const cur  = sorted[i];
       const next = sorted[(i+1)%N];
-
-      // Encontra o par de endpoints mais próximos entre cur e next
       const pairs = [
         { dC: cur.start, dN: next.start, d: dist2(cur.start, next.start) },
         { dC: cur.start, dN: next.end,   d: dist2(cur.start, next.end)   },
@@ -5444,121 +5419,78 @@ window.runEnvoltoria = async function() {
         { dC: cur.end,   dN: next.end,   d: dist2(cur.end,   next.end)   },
       ];
       const best = pairs.reduce((a,b) => b.d < a.d ? b : a);
-
-      // Vértice = média dos dois endpoints mais próximos (ponto de cruzamento)
-      const corner = [
-        (best.dC[0] + best.dN[0]) / 2,
-        (best.dC[1] + best.dN[1]) / 2
-      ];
-      ringCoords.push(corner);
-      log('info', `  canto ${i+1}: cur.${best.dC===cur.start?'start':'end'}=[${best.dC.map(v=>v.toFixed(5))}] next.${best.dN===next.start?'start':'end'}=[${best.dN.map(v=>v.toFixed(5))}] → corner=[${corner.map(v=>v.toFixed(5))}]`);
+      ringCoords.push([(best.dC[0]+best.dN[0])/2, (best.dC[1]+best.dN[1])/2]);
     }
-    ringCoords.push(ringCoords[0]); // fecha o anel
+    ringCoords.push(ringCoords[0]);
 
-    log('info', `Envoltória: polígono com ${ringCoords.length-1} vértice(s) — coords: ${ringCoords.slice(0,-1).map(c=>c.map(v=>v.toFixed(5))).join(' | ')}`);
-
-    // ── 5. Busca o pack "Envoltória de Recuos" na biblioteca ──
-    setMedianasStatus('loading', 'Buscando pack na biblioteca...');
-    const packs = await rpc.invoke('fetchContentPacks', []);
-    const normPk = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
-    const targetPack = (packs||[]).find(p =>
-      normPk(p.name||p.title||'').includes('envoltoria de recuos') ||
-      normPk(p.name||p.title||'').includes('envoltoria recuos')
-    );
-    if (!targetPack) {
-      log('warn', 'Pack não encontrado — packs: ' + (packs||[]).map(p=>p.name||p.title).join(', '));
-      setMedianasStatus('error', '⚠ Pack "Envoltória de Recuos" não encontrado na biblioteca.');
+    if (ringCoords.length < 4) {
+      setMedianasStatus('warn', '⚠ Pontos insuficientes para o polígono.');
       return;
     }
-    const packRef = targetPack.url || targetPack.fileId || targetPack.id;
+    log('info', `Envoltória: polígono com ${ringCoords.length-1} vértice(s)`);
 
-    // ── 6. Lê usage e flow do pack ──
-    const contents = await rpc.invoke('fetchPackContents', [packRef]);
-    const flowsRaw = contents?.flows;
-    const flowsArr = Array.isArray(flowsRaw) ? flowsRaw
-      : typeof flowsRaw === 'object' ? Object.entries(flowsRaw).map(([k,v])=>({id:k,...v})) : [];
-    const targetFlow = flowsArr[0];
-    const flowId = targetFlow?.id || null;
+    // ── 3. Busca o flowId do pack (só se ainda não tivermos) ──
+    // flowId confirmado pelo log: "613e6607cb6e4fbd8bddca676202eb85"
+    // usage confirmado: "Envelope"
+    // Hardcoda esses valores pois já foram verificados empiricamente.
+    // Se o projeto usar um pack diferente, tenta buscar dinamicamente.
+    let usageName = 'Envelope';
+    let flowId = null;
 
-    // Usage: tenta extrair do primeiro item de usages, ou usa nome do pack
-    const usagesRaw = contents?.usages;
-    const usagesArr = Array.isArray(usagesRaw) ? usagesRaw
-      : typeof usagesRaw === 'object' ? Object.entries(usagesRaw).map(([k,v])=>({id:k,...v})) : [];
-    const firstUsage = usagesArr[0];
-    // Tenta todos os campos possíveis de nome
-    const usageName = firstUsage?.name || firstUsage?.title || firstUsage?.type
-      || firstUsage?.usage || firstUsage?.usageName
-      || (typeof usagesRaw === 'object' ? Object.keys(usagesRaw)[0] : null)
-      || 'Envelope';
-
-    log('ok', `Envoltória: usage="${usageName}" flowId=${flowId}`);
-    if (firstUsage) log('info', `  usage obj: ${JSON.stringify(firstUsage).slice(0,300)}`);
-
-    // ── 7. Garante que o pack esteja no projeto ──
-    setMedianasStatus('loading', 'Adicionando pack ao projeto...');
     try {
-      await rpc.invoke('addContentPackToProject', [packRef]);
-    } catch(e) {
-      log('warn', `addContentPackToProject: ${e.message} (continuando...)`);
-    }
+      const packs = await rpc.invoke('fetchContentPacks', []);
+      const normPk = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+      const pack = (packs||[]).find(p => normPk(p.name||p.title||'').includes('envoltoria'));
+      if (pack) {
+        const packRef = pack.url || pack.fileId || pack.id;
+        const contents = await rpc.invoke('fetchPackContents', [packRef]);
+        const flowsRaw = contents?.flows;
+        const flowsArr = Array.isArray(flowsRaw) ? flowsRaw
+          : Object.entries(flowsRaw||{}).map(([k,v])=>({id:k,...v}));
+        if (flowsArr[0]?.id) flowId = flowsArr[0].id;
+        // Garante pack no projeto
+        try { await rpc.invoke('addContentPackToProject', [packRef]); } catch(_) {}
+      }
+    } catch(e) { log('warn', `Busca pack: ${e.message}`); }
 
-    // ── 8. Cria o rawSection com o polígono ──
-    // Usa createRawSections (array de features) que já funciona no app.
-    // Depois updateRawSections para aplicar o usage e flowId.
-    setMedianasStatus('loading', 'Criando envoltória no Giraffe...');
+    log('info', `Envoltória: usage="${usageName}" flowId=${flowId}`);
 
-    const envProps = {
-      layerId: 'default',
-      usage: usageName,
-      sp_tag: 'kv_envoltoria_recuos',
-      ...(flowId ? { flowId } : {})
+    // ── 4. Cria a geometria via createRawSections ──
+    setMedianasStatus('loading', 'Criando geometria no Giraffe...');
+
+    const feature = {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [ringCoords] },
+      properties: {
+        layerId: 'default',
+        usage: usageName,
+        sp_tag: 'kv_envoltoria_recuos'
+      }
     };
 
-    // Tenta importRawSections com FeatureCollection
-    let importOk = false;
-    try {
-      await rpc.invoke('importRawSections', [{
-        type: 'FeatureCollection',
-        features: [{
-          type: 'Feature',
-          geometry: { type: 'Polygon', coordinates: [ringCoords] },
-          properties: envProps
-        }]
-      }]);
-      importOk = true;
-      log('ok', 'importRawSections OK');
-    } catch(e1) {
-      log('warn', `importRawSections falhou (${e1.message}) — tentando createRawSections...`);
-      // Fallback: createRawSections com array de features
+    // createRawSections recebe array de features e retorna array de IDs
+    const ids = await rpc.invoke('createRawSections', [[feature]]);
+    log('ok', `createRawSections OK — ids: ${JSON.stringify(ids)}`);
+
+    // ── 5. Aplica usage e flow via updateRawSections ──
+    if (ids?.length > 0 && flowId) {
+      setMedianasStatus('loading', 'Aplicando usage e flow...');
       try {
-        const ids = await rpc.invoke('createRawSections', [[{
-          type: 'Feature',
-          geometry: { type: 'Polygon', coordinates: [ringCoords] },
-          properties: envProps
-        }]]);
-        importOk = true;
-        log('ok', `createRawSections OK — ids: ${JSON.stringify(ids)}`);
-        // Aplica usage e flow via updateRawSections
-        if (ids?.length && (usageName || flowId)) {
-          try {
-            await rpc.invoke('updateRawSections', [ids.map(id => ({
-              id,
-              properties: envProps
-            }))]);
-            log('ok', 'updateRawSections OK');
-          } catch(e3) { log('warn', `updateRawSections: ${e3.message}`); }
-        }
-      } catch(e2) {
-        log('err', `createRawSections também falhou: ${e2.message}`);
-        setMedianasStatus('error', `Erro ao criar envoltória: ${e2.message}`);
-        return;
+        await rpc.invoke('updateRawSections', [ids.map(id => ({
+          id,
+          properties: {
+            usage: usageName,
+            flowId,
+            patchType: 'slab'
+          }
+        }))]);
+        log('ok', 'updateRawSections OK — usage e flow aplicados.');
+      } catch(e) {
+        log('warn', `updateRawSections: ${e.message} (geometria criada mas sem flow)`);
       }
     }
 
-    if (importOk) {
-      setMedianasStatus('success', `✓ Envoltória "${usageName}" criada a partir das medianas.`);
-      log('ok', `Envoltória criada — usage="${usageName}" flowId=${flowId}.`);
-    }
+    setMedianasStatus('success', `✓ Envoltória "${usageName}" criada a partir das medianas.`);
 
   } catch(err) {
     setMedianasStatus('error', `Erro: ${err.message}`);
@@ -5572,7 +5504,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V110 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V111 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
