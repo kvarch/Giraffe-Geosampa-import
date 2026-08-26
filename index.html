@@ -5374,161 +5374,121 @@ window.runMedianas = async function() {
 window._medianasGeradas = null;
 
 window.runEnvoltoria = async function() {
-  const medianas = window._medianasGeradas;
-  if (!medianas || medianas.length < 2) {
-    setMedianasStatus('warn', '⚠ Gere as linhas medianas primeiro.');
-    log('warn', 'Envoltória: sem medianas geradas.');
-    return;
-  }
-
-  setMedianasStatus('loading', 'Buscando "Envoltória de Recuos" na biblioteca...');
+  setMedianasStatus('loading', 'Lendo layer "Envoltória · Medianas"...');
   try {
-    // ── 1. Busca o content pack pelo nome ──
-    const packs = await rpc.invoke('fetchContentPacks', []);
-    log('info', `Envoltória: ${packs?.length ?? 0} pack(s) disponíveis`);
+    // ── 1. Lê as linhas medianas do layer do Giraffe ──
+    const layerFC = await rpc.invoke('getLayerContents', ['Envoltória · Medianas']);
+    const linhas = (layerFC?.features || []).filter(f =>
+      f.geometry?.type === 'LineString' || f.geometry?.type === 'MultiLineString');
 
-    // Encontra o pack "envoltória de recuos" (case-insensitive, sem acento)
-    const normPack = s => (s||'').toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
-
-    const targetPack = (packs||[]).find(p =>
-      normPack(p.name||p.title||'').includes('envoltoria de recuos') ||
-      normPack(p.name||p.title||'').includes('envoltoria recuos') ||
-      normPack(p.name||p.title||'').includes('buildable envelope')
-    );
-
-    if (!targetPack) {
-      // Loga todos os packs para diagnóstico
-      (packs||[]).forEach(p => log('info', `  pack: "${p.name||p.title}" id=${p.id}`));
-      setMedianasStatus('error', '⚠ Pack "Envoltória de Recuos" não encontrado. Veja o log.');
-      log('warn', 'Envoltória: verifique o nome exato do pack no log acima.');
+    if (linhas.length < 2) {
+      setMedianasStatus('warn', `⚠ Layer "Envoltória · Medianas" não encontrado ou sem linhas suficientes (${linhas.length}). Gere as medianas primeiro.`);
+      log('warn', `Envoltória: ${linhas.length} linha(s) encontrada(s) no layer.`);
       return;
     }
-    log('ok', `Envoltória: pack encontrado — "${targetPack.name||targetPack.title}"`);
+    log('ok', `Envoltória: ${linhas.length} mediana(s) lidas do layer.`);
 
-    // ── 2. Lê o conteúdo do pack para extrair usage e flow ──
-    setMedianasStatus('loading', 'Lendo conteúdo do pack...');
-    const packRef = targetPack.url || targetPack.fileId || targetPack.id;
-    const contents = await rpc.invoke('fetchPackContents', [packRef]);
-    log('info', `Envoltória: estrutura do pack: ${JSON.stringify(Object.keys(contents||{}))}`);
+    // ── 2. Extrai endpoints de cada linha ──
+    // Cada mediana é um segmento [ptStart, ..., ptEnd]
+    // Os endpoints já são os pontos de cruzamento calculados pelo runMedianas
+    const endpoints = linhas.map(f => {
+      const coords = f.geometry.type === 'LineString'
+        ? f.geometry.coordinates
+        : f.geometry.coordinates[0];
+      return { start: coords[0], end: coords[coords.length - 1] };
+    });
 
-    // O pack tem: { layerTree, sections, usages: [...], flows: [...] }
-    // Extrai o primeiro usage com nome que contenha "envelope" ou "envolt"
-    const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+    // ── 3. Ordena as medianas por ângulo ao redor do centróide ──
+    const allPts = endpoints.flatMap(e => [e.start, e.end]);
+    const cx = allPts.reduce((s,p)=>s+p[0],0)/allPts.length;
+    const cy = allPts.reduce((s,p)=>s+p[1],0)/allPts.length;
 
-    // usages pode ser array ou objeto chaveado — normaliza para array
-    const usagesRaw = contents?.usages;
-    const usagesArr = Array.isArray(usagesRaw)
-      ? usagesRaw
-      : typeof usagesRaw === 'object' ? Object.entries(usagesRaw).map(([k,v]) => ({id:k, ...v}))
-      : [];
-
-    const flowsRaw = contents?.flows;
-    const flowsArr = Array.isArray(flowsRaw)
-      ? flowsRaw
-      : typeof flowsRaw === 'object' ? Object.entries(flowsRaw).map(([k,v]) => ({id:k, ...v}))
-      : [];
-
-    log('info', `Envoltória: ${usagesArr.length} usage(s), ${flowsArr.length} flow(s)`);
-    usagesArr.forEach((u,i) => log('info', `  usage[${i}]: name="${u.name||u.title}" id=${u.id} keys=${JSON.stringify(Object.keys(u))}`));
-    flowsArr.forEach((f,i) => log('info', `  flow[${i}]: name="${f.name||f.title}" id=${f.id}`));
-
-    // O flow tem o nome "Buildable Envelope" — usa ele como referência principal
-    const targetFlow = flowsArr.find(f =>
-      normalize(f.name||f.title||f.id||'').includes('buildable') ||
-      normalize(f.name||f.title||f.id||'').includes('envelope')
-    ) || flowsArr[0];
-
-    // O usage pode ter o nome no campo "type", "usage", ou ser o próprio id
-    const targetUsage = usagesArr[0]; // só há 1 no pack
-    // Tenta extrair o nome do usage de várias formas possíveis
-    const usageName = targetUsage?.name
-      || targetUsage?.title
-      || targetUsage?.type
-      || targetUsage?.usage
-      || (typeof targetUsage === 'string' ? targetUsage : null)
-      || Object.keys(usagesRaw||{})[0]  // tenta a chave do objeto original
-      || 'Envelope';
-
-    const flowId = targetFlow?.id || targetFlow?.flowId || null;
-    log('ok', `Envoltória: usage="${usageName}" flowId=${flowId}`);
-    if (targetUsage) log('info', `  usage completo: ${JSON.stringify(targetUsage).slice(0,200)}`);
-
-    // ── 3. Monta polígono da envoltória usando os endpoints de cruzamento das medianas ──
-    // Cada mediana tem 2 endpoints = os cantos do cruzamento com medianas adjacentes.
-    // O anel correto: para cada par de medianas adjacentes (i, i+1),
-    // o vértice do canto é o endpoint de mediana[i] mais próximo de mediana[i+1].
-    setMedianasStatus('loading', 'Calculando polígono da envoltória...');
-
-    // Centróide global para ordenação angular
-    const allPts = medianas.flatMap(f => f.geometry.coordinates);
-    const cx = allPts.reduce((s,c)=>s+c[0],0)/allPts.length;
-    const cy = allPts.reduce((s,c)=>s+c[1],0)/allPts.length;
-
-    // Ordena medianas por ângulo do ponto médio ao redor do centróide
-    const medOrdenadas = [...medianas].sort((a,b) => {
-      const mA = a.geometry.coordinates[Math.floor(a.geometry.coordinates.length/2)];
-      const mB = b.geometry.coordinates[Math.floor(b.geometry.coordinates.length/2)];
+    const sorted = [...endpoints].sort((a,b) => {
+      const mA = [(a.start[0]+a.end[0])/2, (a.start[1]+a.end[1])/2];
+      const mB = [(b.start[0]+b.end[0])/2, (b.start[1]+b.end[1])/2];
       return Math.atan2(mA[1]-cy, mA[0]-cx) - Math.atan2(mB[1]-cy, mB[0]-cx);
     });
 
-    const N = medOrdenadas.length;
-    const ringCoords = [];
+    // ── 4. Monta o anel: para cada par adjacente (i, i+1),
+    //    o vértice de canto é o endpoint de sorted[i] mais próximo de sorted[i+1] ──
+    const N = sorted.length;
     const dist2 = (a,b) => (a[0]-b[0])**2+(a[1]-b[1])**2;
+    const ringCoords = [];
 
     for (let i = 0; i < N; i++) {
-      const cur  = medOrdenadas[i];
-      const next = medOrdenadas[(i+1)%N];
-      const cA = cur.geometry.coordinates[0];
-      const cB = cur.geometry.coordinates[cur.geometry.coordinates.length-1];
-      const nA = next.geometry.coordinates[0];
-      const nB = next.geometry.coordinates[next.geometry.coordinates.length-1];
-
-      // Qual endpoint de cur está mais próximo de qualquer endpoint de next?
-      const minA = Math.min(dist2(cA,nA), dist2(cA,nB));
-      const minB = Math.min(dist2(cB,nA), dist2(cB,nB));
-      // O endpoint MAIS PRÓXIMO do next = ponto de esquina (cruzamento)
-      // → esse é o vértice do polígono neste canto
-      ringCoords.push(minA < minB ? cA : cB);
+      const cur  = sorted[i];
+      const next = sorted[(i+1)%N];
+      const minA = Math.min(dist2(cur.start, next.start), dist2(cur.start, next.end));
+      const minB = Math.min(dist2(cur.end,   next.start), dist2(cur.end,   next.end));
+      // Endpoint mais PRÓXIMO do próximo segmento = canto de cruzamento
+      ringCoords.push(minA < minB ? cur.start : cur.end);
     }
-
     ringCoords.push(ringCoords[0]); // fecha o anel
 
-    if (ringCoords.length < 4) {
-      setMedianasStatus('warn', '⚠ Pontos insuficientes para o polígono.');
+    log('info', `Envoltória: polígono com ${ringCoords.length-1} vértice(s) — coords: ${ringCoords.slice(0,-1).map(c=>c.map(v=>v.toFixed(5))).join(' | ')}`);
+
+    // ── 5. Busca o pack "Envoltória de Recuos" na biblioteca ──
+    setMedianasStatus('loading', 'Buscando pack na biblioteca...');
+    const packs = await rpc.invoke('fetchContentPacks', []);
+    const normPk = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+    const targetPack = (packs||[]).find(p =>
+      normPk(p.name||p.title||'').includes('envoltoria de recuos') ||
+      normPk(p.name||p.title||'').includes('envoltoria recuos')
+    );
+    if (!targetPack) {
+      log('warn', 'Pack não encontrado — packs: ' + (packs||[]).map(p=>p.name||p.title).join(', '));
+      setMedianasStatus('error', '⚠ Pack "Envoltória de Recuos" não encontrado na biblioteca.');
       return;
     }
-    log('info', `Envoltória: polígono com ${ringCoords.length-1} vértices`);
+    const packRef = targetPack.url || targetPack.fileId || targetPack.id;
 
-    // ── 4. Monta o feature com usage e flow do pack ──
-    const envFeature = {
-      type: 'Feature',
-      geometry: { type: 'Polygon', coordinates: [ringCoords] },
-      properties: {
-        layerId: 'default',
-        usage: usageName,
-        sp_tag: 'kv_envoltoria_recuos',
-        ...(flowId ? { flowId } : {})
-      }
-    };
+    // ── 6. Lê usage e flow do pack ──
+    const contents = await rpc.invoke('fetchPackContents', [packRef]);
+    const flowsRaw = contents?.flows;
+    const flowsArr = Array.isArray(flowsRaw) ? flowsRaw
+      : typeof flowsRaw === 'object' ? Object.entries(flowsRaw).map(([k,v])=>({id:k,...v})) : [];
+    const targetFlow = flowsArr[0];
+    const flowId = targetFlow?.id || null;
 
-    // ── 5. Garante que o pack esteja no projeto ──
+    // Usage: tenta extrair do primeiro item de usages, ou usa nome do pack
+    const usagesRaw = contents?.usages;
+    const usagesArr = Array.isArray(usagesRaw) ? usagesRaw
+      : typeof usagesRaw === 'object' ? Object.entries(usagesRaw).map(([k,v])=>({id:k,...v})) : [];
+    const firstUsage = usagesArr[0];
+    // Tenta todos os campos possíveis de nome
+    const usageName = firstUsage?.name || firstUsage?.title || firstUsage?.type
+      || firstUsage?.usage || firstUsage?.usageName
+      || (typeof usagesRaw === 'object' ? Object.keys(usagesRaw)[0] : null)
+      || 'Envelope';
+
+    log('ok', `Envoltória: usage="${usageName}" flowId=${flowId}`);
+    if (firstUsage) log('info', `  usage obj: ${JSON.stringify(firstUsage).slice(0,300)}`);
+
+    // ── 7. Garante que o pack esteja no projeto ──
     setMedianasStatus('loading', 'Adicionando pack ao projeto...');
     try {
       await rpc.invoke('addContentPackToProject', [packRef]);
-      log('ok', 'Pack adicionado ao projeto.');
     } catch(e) {
       log('warn', `addContentPackToProject: ${e.message} (continuando...)`);
     }
 
-    // ── 6. Importa o rawSection ──
+    // ── 8. Importa o rawSection com o polígono ──
     setMedianasStatus('loading', 'Importando envoltória no Giraffe...');
     await rpc.invoke('importRawSections', [{
       type: 'FeatureCollection',
-      features: [envFeature]
+      features: [{
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [ringCoords] },
+        properties: {
+          layerId: 'default',
+          usage: usageName,
+          sp_tag: 'kv_envoltoria_recuos',
+          ...(flowId ? { flowId } : {})
+        }
+      }]
     }]);
 
-    setMedianasStatus('success', `✓ Envoltória "${usageName}" criada no Giraffe.`);
+    setMedianasStatus('success', `✓ Envoltória "${usageName}" criada a partir das medianas.`);
     log('ok', `Envoltória importada — usage="${usageName}" flowId=${flowId}.`);
 
   } catch(err) {
@@ -5543,7 +5503,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V105 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V106 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
