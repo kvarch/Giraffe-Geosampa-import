@@ -4872,58 +4872,7 @@ window.pickTerrainForMedianas = async function() {
   }
 };
 
-// Botão dedicado de seleção de terreno para a aba Envoltória.
-// Usa getQueriedFeature (clique no mapa) com fallback para getSelectedFeatures.
-// Armazena em _medianasTerreno — completamente isolado de currentGeometry.
-window.pickTerrainForMedianas = async function() {
-  const btn = document.getElementById('btnPickMedianas');
-  const lbl = document.getElementById('medianasTerrLabel');
-  btn.disabled = true;
-  btn.textContent = '⏳ Clique no terreno no mapa...';
-  lbl.style.color = 'var(--warn)';
-  lbl.textContent = 'Clique sobre o terreno no mapa...';
 
-  try {
-    // Tenta getQueriedFeature após aguardar um clique via mapSelectCoord
-    // Usa Promise que resolve quando giraffeState detecta mapSelectCoord
-    const geom = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('timeout')), 30000);
-      // Observer único para o próximo clique no mapa
-      let unsubscribed = false;
-      const unsub = giraffeState.addListener(['mapSelectCoord'], async () => {
-        if (unsubscribed) return;
-        unsubscribed = true;
-        try { unsub(); } catch(_) {}
-        clearTimeout(timeout);
-        try {
-          const feat = await rpc.invoke('getQueriedFeature', []);
-          if (feat?.geometry && (feat.geometry.type==='Polygon'||feat.geometry.type==='MultiPolygon')) {
-            resolve(feat.geometry);
-          } else {
-            reject(new Error('Geometria clicada não é um polígono'));
-          }
-        } catch(e) { reject(e); }
-      });
-    });
-
-    window._medianasTerreno = geom;
-    const area = turf.area({type:'Feature',geometry:geom,properties:{}});
-    const ctr = turf.centroid({type:'Feature',geometry:geom,properties:{}}).geometry.coordinates;
-    lbl.style.color = 'var(--green)';
-    lbl.textContent = `✓ Terreno selecionado — ${area.toFixed(0)}m² · [${ctr.map(v=>v.toFixed(5))}]`;
-    log('ok', `Medianas: terreno selecionado — ${area.toFixed(0)}m² ctr=[${ctr.map(v=>v.toFixed(5))}]`);
-
-  } catch(e) {
-    lbl.style.color = 'var(--error)';
-    lbl.textContent = e.message === 'timeout'
-      ? '⚠ Tempo esgotado. Tente novamente.'
-      : `⚠ ${e.message}`;
-    log('warn', `Medianas: seleção cancelada — ${e.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '🖱 Selecionar Terreno no Mapa';
-  }
-};
 //
 // Lógica correta:
 //  - Alvo     = quadra_fiscal que contém o terreno
@@ -5266,7 +5215,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V93 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V94 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
