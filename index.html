@@ -5416,39 +5416,43 @@ window.runEnvoltoria = async function() {
     // Extrai o primeiro usage com nome que contenha "envelope" ou "envolt"
     const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
 
-    const usagesArr = Array.isArray(contents?.usages)
-      ? contents.usages
-      : Object.values(contents?.usages || {});
+    // usages pode ser array ou objeto chaveado — normaliza para array
+    const usagesRaw = contents?.usages;
+    const usagesArr = Array.isArray(usagesRaw)
+      ? usagesRaw
+      : typeof usagesRaw === 'object' ? Object.entries(usagesRaw).map(([k,v]) => ({id:k, ...v}))
+      : [];
 
-    const flowsArr = Array.isArray(contents?.flows)
-      ? contents.flows
-      : Object.values(contents?.flows || {});
+    const flowsRaw = contents?.flows;
+    const flowsArr = Array.isArray(flowsRaw)
+      ? flowsRaw
+      : typeof flowsRaw === 'object' ? Object.entries(flowsRaw).map(([k,v]) => ({id:k, ...v}))
+      : [];
 
     log('info', `Envoltória: ${usagesArr.length} usage(s), ${flowsArr.length} flow(s)`);
-    usagesArr.forEach((u,i) => log('info', `  usage[${i}]: name="${u.name||u.title||u.id}" id=${u.id}`));
-    flowsArr.forEach((f,i) => log('info', `  flow[${i}]: name="${f.name||f.title||f.id}" id=${f.id}`));
+    usagesArr.forEach((u,i) => log('info', `  usage[${i}]: name="${u.name||u.title}" id=${u.id} keys=${JSON.stringify(Object.keys(u))}`));
+    flowsArr.forEach((f,i) => log('info', `  flow[${i}]: name="${f.name||f.title}" id=${f.id}`));
 
-    // Pega o primeiro usage (são normalmente 1 por pack)
-    const targetUsage = usagesArr.find(u =>
-      normalize(u.name||u.title||u.id||'').includes('envelope') ||
-      normalize(u.name||u.title||u.id||'').includes('envolt')
-    ) || usagesArr[0];
-
+    // O flow tem o nome "Buildable Envelope" — usa ele como referência principal
     const targetFlow = flowsArr.find(f =>
       normalize(f.name||f.title||f.id||'').includes('buildable') ||
-      normalize(f.name||f.title||f.id||'').includes('envelope') ||
-      normalize(f.name||f.title||f.id||'').includes('envolt')
+      normalize(f.name||f.title||f.id||'').includes('envelope')
     ) || flowsArr[0];
 
-    if (!targetUsage) {
-      log('warn', `Envoltória: nenhum usage encontrado no pack.`);
-      setMedianasStatus('error', '⚠ Usage não encontrado no pack. Veja o log.');
-      return;
-    }
+    // O usage pode ter o nome no campo "type", "usage", ou ser o próprio id
+    const targetUsage = usagesArr[0]; // só há 1 no pack
+    // Tenta extrair o nome do usage de várias formas possíveis
+    const usageName = targetUsage?.name
+      || targetUsage?.title
+      || targetUsage?.type
+      || targetUsage?.usage
+      || (typeof targetUsage === 'string' ? targetUsage : null)
+      || Object.keys(usagesRaw||{})[0]  // tenta a chave do objeto original
+      || 'Envelope';
 
-    const usageName = targetUsage.name || targetUsage.title || targetUsage.id;
-    const flowId    = targetFlow?.id || targetFlow?.flowId || null;
+    const flowId = targetFlow?.id || targetFlow?.flowId || null;
     log('ok', `Envoltória: usage="${usageName}" flowId=${flowId}`);
+    if (targetUsage) log('info', `  usage completo: ${JSON.stringify(targetUsage).slice(0,200)}`);
 
     // ── 3. Monta polígono da envoltória usando os endpoints de cruzamento das medianas ──
     // Cada mediana tem 2 endpoints = os cantos do cruzamento com medianas adjacentes.
@@ -5499,7 +5503,7 @@ window.runEnvoltoria = async function() {
     // ── 4. Monta o feature com usage e flow do pack ──
     const envFeature = {
       type: 'Feature',
-      geometry: { type: 'Polygon', coordinates: [outerPts] },
+      geometry: { type: 'Polygon', coordinates: [ringCoords] },
       properties: {
         layerId: 'default',
         usage: usageName,
@@ -5539,7 +5543,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V104 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V105 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
