@@ -5388,13 +5388,13 @@ window.runEnvoltoria = async function() {
     log('info', `Envoltória: ${packs?.length ?? 0} pack(s) disponíveis`);
 
     // Encontra o pack "envoltória de recuos" (case-insensitive, sem acento)
-    const normalize = s => (s||'').toLowerCase()
+    const normPack = s => (s||'').toLowerCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
 
     const targetPack = (packs||[]).find(p =>
-      normalize(p.name||p.title||'').includes('envoltoria de recuos') ||
-      normalize(p.name||p.title||'').includes('envoltoria recuos') ||
-      normalize(p.name||p.title||'').includes('buildable envelope')
+      normPack(p.name||p.title||'').includes('envoltoria de recuos') ||
+      normPack(p.name||p.title||'').includes('envoltoria recuos') ||
+      normPack(p.name||p.title||'').includes('buildable envelope')
     );
 
     if (!targetPack) {
@@ -5522,7 +5522,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V102 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V103 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
