@@ -5450,34 +5450,51 @@ window.runEnvoltoria = async function() {
     const flowId    = targetFlow?.id || targetFlow?.flowId || null;
     log('ok', `Envoltória: usage="${usageName}" flowId=${flowId}`);
 
-    // ── 3. Monta polígono da envoltória a partir dos endpoints das medianas ──
+    // ── 3. Monta polígono da envoltória usando os endpoints de cruzamento das medianas ──
+    // Cada mediana tem 2 endpoints = os cantos do cruzamento com medianas adjacentes.
+    // O anel correto: para cada par de medianas adjacentes (i, i+1),
+    // o vértice do canto é o endpoint de mediana[i] mais próximo de mediana[i+1].
     setMedianasStatus('loading', 'Calculando polígono da envoltória...');
 
-    const endpoints = medianas.map(f => {
-      const c = f.geometry.coordinates;
-      return { start: c[0], end: c[c.length-1] };
+    // Centróide global para ordenação angular
+    const allPts = medianas.flatMap(f => f.geometry.coordinates);
+    const cx = allPts.reduce((s,c)=>s+c[0],0)/allPts.length;
+    const cy = allPts.reduce((s,c)=>s+c[1],0)/allPts.length;
+
+    // Ordena medianas por ângulo do ponto médio ao redor do centróide
+    const medOrdenadas = [...medianas].sort((a,b) => {
+      const mA = a.geometry.coordinates[Math.floor(a.geometry.coordinates.length/2)];
+      const mB = b.geometry.coordinates[Math.floor(b.geometry.coordinates.length/2)];
+      return Math.atan2(mA[1]-cy, mA[0]-cx) - Math.atan2(mB[1]-cy, mB[0]-cx);
     });
 
-    const allX = endpoints.flatMap(e=>[e.start[0],e.end[0]]);
-    const allY = endpoints.flatMap(e=>[e.start[1],e.end[1]]);
-    const cx = allX.reduce((s,v)=>s+v,0)/allX.length;
-    const cy = allY.reduce((s,v)=>s+v,0)/allY.length;
+    const N = medOrdenadas.length;
+    const ringCoords = [];
+    const dist2 = (a,b) => (a[0]-b[0])**2+(a[1]-b[1])**2;
 
-    // Para cada mediana, pega o endpoint externo (mais longe do centro)
-    // ordena em sentido anti-horário pelo ângulo do ponto externo
-    const outerPts = endpoints.map(ep => {
-      const d0 = (ep.start[0]-cx)**2+(ep.start[1]-cy)**2;
-      const d1 = (ep.end[0]  -cx)**2+(ep.end[1]  -cy)**2;
-      return d0 > d1 ? ep.start : ep.end;
-    });
-    outerPts.sort((a,b) => Math.atan2(a[1]-cy,a[0]-cx) - Math.atan2(b[1]-cy,b[0]-cx));
-    outerPts.push(outerPts[0]); // fecha o anel
+    for (let i = 0; i < N; i++) {
+      const cur  = medOrdenadas[i];
+      const next = medOrdenadas[(i+1)%N];
+      const cA = cur.geometry.coordinates[0];
+      const cB = cur.geometry.coordinates[cur.geometry.coordinates.length-1];
+      const nA = next.geometry.coordinates[0];
+      const nB = next.geometry.coordinates[next.geometry.coordinates.length-1];
 
-    if (outerPts.length < 4) {
+      // Qual endpoint de cur está mais próximo de qualquer endpoint de next?
+      const minA = Math.min(dist2(cA,nA), dist2(cA,nB));
+      const minB = Math.min(dist2(cB,nA), dist2(cB,nB));
+      // O endpoint MAIS PRÓXIMO do next = ponto de esquina (cruzamento)
+      // → esse é o vértice do polígono neste canto
+      ringCoords.push(minA < minB ? cA : cB);
+    }
+
+    ringCoords.push(ringCoords[0]); // fecha o anel
+
+    if (ringCoords.length < 4) {
       setMedianasStatus('warn', '⚠ Pontos insuficientes para o polígono.');
       return;
     }
-    log('info', `Envoltória: polígono com ${outerPts.length-1} vértices`);
+    log('info', `Envoltória: polígono com ${ringCoords.length-1} vértices`);
 
     // ── 4. Monta o feature com usage e flow do pack ──
     const envFeature = {
@@ -5522,7 +5539,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V103 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V104 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
