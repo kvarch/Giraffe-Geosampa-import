@@ -5502,27 +5502,63 @@ window.runEnvoltoria = async function() {
       log('warn', `addContentPackToProject: ${e.message} (continuando...)`);
     }
 
-    // ── 8. Importa o rawSection com o polígono ──
-    // importRawSections recebe FeatureCollection como único argumento
-    setMedianasStatus('loading', 'Importando envoltória no Giraffe...');
-    await rpc.invoke('importRawSections', [
-      {
+    // ── 8. Cria o rawSection com o polígono ──
+    // Usa createRawSections (array de features) que já funciona no app.
+    // Depois updateRawSections para aplicar o usage e flowId.
+    setMedianasStatus('loading', 'Criando envoltória no Giraffe...');
+
+    const envProps = {
+      layerId: 'default',
+      usage: usageName,
+      sp_tag: 'kv_envoltoria_recuos',
+      ...(flowId ? { flowId } : {})
+    };
+
+    // Tenta importRawSections com FeatureCollection
+    let importOk = false;
+    try {
+      await rpc.invoke('importRawSections', [{
         type: 'FeatureCollection',
         features: [{
           type: 'Feature',
           geometry: { type: 'Polygon', coordinates: [ringCoords] },
-          properties: {
-            layerId: 'default',
-            usage: usageName,
-            sp_tag: 'kv_envoltoria_recuos',
-            ...(flowId ? { flowId } : {})
-          }
+          properties: envProps
         }]
+      }]);
+      importOk = true;
+      log('ok', 'importRawSections OK');
+    } catch(e1) {
+      log('warn', `importRawSections falhou (${e1.message}) — tentando createRawSections...`);
+      // Fallback: createRawSections com array de features
+      try {
+        const ids = await rpc.invoke('createRawSections', [[{
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [ringCoords] },
+          properties: envProps
+        }]]);
+        importOk = true;
+        log('ok', `createRawSections OK — ids: ${JSON.stringify(ids)}`);
+        // Aplica usage e flow via updateRawSections
+        if (ids?.length && (usageName || flowId)) {
+          try {
+            await rpc.invoke('updateRawSections', [ids.map(id => ({
+              id,
+              properties: envProps
+            }))]);
+            log('ok', 'updateRawSections OK');
+          } catch(e3) { log('warn', `updateRawSections: ${e3.message}`); }
+        }
+      } catch(e2) {
+        log('err', `createRawSections também falhou: ${e2.message}`);
+        setMedianasStatus('error', `Erro ao criar envoltória: ${e2.message}`);
+        return;
       }
-    ]);
+    }
 
-    setMedianasStatus('success', `✓ Envoltória "${usageName}" criada a partir das medianas.`);
-    log('ok', `Envoltória importada — usage="${usageName}" flowId=${flowId}.`);
+    if (importOk) {
+      setMedianasStatus('success', `✓ Envoltória "${usageName}" criada a partir das medianas.`);
+      log('ok', `Envoltória criada — usage="${usageName}" flowId=${flowId}.`);
+    }
 
   } catch(err) {
     setMedianasStatus('error', `Erro: ${err.message}`);
@@ -5536,7 +5572,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V109 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V110 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
