@@ -1025,9 +1025,20 @@ async function fetchWFS(typeId, bbox, maxFeatures, timeoutMs) {
 // GEO MATH
 // ══════════════════════════════════════════════════════════════════
 const DEG_LAT = 1/111320;
-const DEG_LNG = 1/(111320*Math.cos(23.5*Math.PI/180));
+// Fator de longitude depende da latitude. O valor abaixo é apenas um default
+// para São Paulo; expandBBOX recalcula com a latitude real do bbox.
+const DEG_LNG = 1/(111320*Math.cos(23.55*Math.PI/180));
 
-function expandBBOX(b,m){return{minX:b.minX-m*DEG_LNG,minY:b.minY-m*DEG_LAT,maxX:b.maxX+m*DEG_LNG,maxY:b.maxY+m*DEG_LAT};}
+function expandBBOX(b,m){
+  // Recalcula o fator de longitude com a latitude real do centro do bbox
+  // (usar cos fixo introduz erro de escala em latitudes diferentes)
+  const latC = (b.minY + b.maxY) / 2;
+  const degLng = 1/(111320*Math.cos(latC*Math.PI/180));
+  return {
+    minX: b.minX - m*degLng, minY: b.minY - m*DEG_LAT,
+    maxX: b.maxX + m*degLng, maxY: b.maxY + m*DEG_LAT
+  };
+}
 function mergeBBOX(a,b){if(!a)return b;return{minX:Math.min(a.minX,b.minX),minY:Math.min(a.minY,b.minY),maxX:Math.max(a.maxX,b.maxX),maxY:Math.max(a.maxY,b.maxY)};}
 function featureToBBOX(f){
   const pts=[];
@@ -2111,7 +2122,10 @@ async function _runReport(features) {
            gjLinhaAT,gjTorreAT,gjMelhoramento,gjFaixaNE,gjSoloMole,gjCartaGeo,
            gjCobertura,gjDrenagem,gjContaminadaSigac,gjContaminadaSvma,gjHeliponto,
            gjMetroLinha,gjMetroArea,gjTremLinha,gjTremArea,
-           gjMancha5,gjMancha25,gjMancha100,gjLoteLogr] = await Promise.all([
+           gjMancha5,gjMancha25,gjMancha100,gjLoteLogr,
+           gjAreaCedida,gjCAP,gjEstMetro,gjEstMetroProj,gjMetroLinhaProj,
+           gjEstTrem,gjEstTremProj,gjTremLinhaProj,gjFerroviaMDC,
+           gjTCA,gjFeiraLivre,gjSubsetorOU] = await Promise.all([
       fetch('geoportal:zoneamento_2016_map1', 10).catch(()=>null),
       fetch('geoportal:operacao_urbana', 5).catch(()=>null),
       fetch('geoportal:eixo_ativado_decreto', 5).catch(()=>null),
@@ -2158,6 +2172,19 @@ async function _runReport(features) {
       fetch('geoportal:mancha_inundacao_25', 3).catch(()=>null),
       fetch('geoportal:mancha_inundacao_100', 3).catch(()=>null),
       fetch('geoportal:segmento_logradouro', 3).catch(()=>null),
+      // ── camadas adicionadas para completar o checklist ──
+      fetch('geoportal:GEOSAMPA_area_cedida_cidadao', 3).catch(()=>null),
+      fetch('geoportal:GEOSAMPA_cadastro_area_publica_cidadao', 3).catch(()=>null),
+      fetch('geoportal:estacao_metro', 3).catch(()=>null),
+      fetch('geoportal:estacao_metro_projetada', 3).catch(()=>null),
+      fetch('geoportal:linha_metro_projetada', 3).catch(()=>null),
+      fetch('geoportal:estacao_trem', 3).catch(()=>null),
+      fetch('geoportal:estacao_trem_projetada', 3).catch(()=>null),
+      fetch('geoportal:linha_trem_projetada', 3).catch(()=>null),
+      fetch('geoportal:ferrovia_mdc', 3).catch(()=>null),
+      fetch('geoportal:GEOSAMPA_termo_compromisso_ambiental', 3).catch(()=>null),
+      fetch('geoportal:equipamento_feira_livre', 3).catch(()=>null),
+      fetch('geoportal:subsetor_operacao_urbana', 3).catch(()=>null),
     ]);
 
     const zones    = (gjZone?.features||[]).map(f=>f.properties);
@@ -2587,6 +2614,8 @@ async function _runReport(features) {
           const checklistCompleto = [
             // Cadastro
             { grupo:'Cadastro / Base Territorial', titulo:'Lotes (SQL)',                           hit: _hit(gjLoteLogr) },
+            { grupo:'Cadastro / Base Territorial', titulo:'Área Cedida',                           hit: _hit(gjAreaCedida) },
+            { grupo:'Cadastro / Base Territorial', titulo:'Cadastro de Área Pública (CAP)',        hit: _hit(gjCAP) },
             // Sistema Viário
             { grupo:'Sistema Viário', titulo:'Logradouro Confrontante',                            hit: _hit(gjLoteLogr) },
             // Legislação
@@ -2601,6 +2630,7 @@ async function _runReport(features) {
             { grupo:'Legislação Urbana', titulo:'PDE — Intervenções Pontuais de Melhoramento (Mapa 8)', hit: _hit(gjPdePontual) },
             { grupo:'Legislação Urbana', titulo:'PDE — Drenagem Ações Prioritárias Lineares (Mapa 12)', hit: _hit(gjPdeDrenLin) },
             { grupo:'Legislação Urbana', titulo:'PDE — Drenagem Ações Prioritárias Pontuais (Mapa 12)', hit: _hit(gjPdeDrenPto) },
+            { grupo:'Legislação Urbana', titulo:'Subsetor de Operação Urbana',                     hit: _hit(gjSubsetorOU) },
             // Patrimônio
             { grupo:'Patrimônio Cultural', titulo:'Bem Tombado / Em Processo de Tombamento',      hit: _hit(gjTombado) },
             { grupo:'Patrimônio Cultural', titulo:'Acervo Tombado',                               hit: _hit(gjAcervoTombado) },
@@ -2610,11 +2640,19 @@ async function _runReport(features) {
             { grupo:'Patrimônio Cultural', titulo:'Área de Envoltória IPHAN',                     hit: _hit(gjIphan) },
             { grupo:'Patrimônio Cultural', titulo:'CIT — Cadastro de Imóveis Tombados',           hit: _hit(gjCIT) },
             // Transporte
+            { grupo:'Transporte', titulo:'Metrô (Estação)',                                        hit: _hit(gjEstMetro) },
+            { grupo:'Transporte', titulo:'Metrô Projeto (Estação)',                                hit: _hit(gjEstMetroProj) },
             { grupo:'Transporte', titulo:'Metrô (Linha)',                                          hit: _hit(gjMetroLinha) },
+            { grupo:'Transporte', titulo:'Metrô Projeto (Linha)',                                  hit: _hit(gjMetroLinhaProj) },
             { grupo:'Transporte', titulo:'Metrô (Área de Influência)',                             hit: _hit(gjMetroArea) },
+            { grupo:'Transporte', titulo:'Trem Metropolitano (Estação)',                           hit: _hit(gjEstTrem) },
+            { grupo:'Transporte', titulo:'Trem Projeto (Estação)',                                 hit: _hit(gjEstTremProj) },
             { grupo:'Transporte', titulo:'Trem Metropolitano (Linha)',                             hit: _hit(gjTremLinha) },
+            { grupo:'Transporte', titulo:'Trem Projeto (Linha)',                                   hit: _hit(gjTremLinhaProj) },
+            { grupo:'Transporte', titulo:'Ferrovia (MDC)',                                         hit: _hit(gjFerroviaMDC) },
             { grupo:'Transporte', titulo:'Trem (Área de Influência)',                              hit: _hit(gjTremArea) },
             // Ambiental
+            { grupo:'Licenciamento Ambiental', titulo:'Termo de Compromisso Ambiental (TCA)',      hit: _hit(gjTCA) },
             { grupo:'Licenciamento Ambiental', titulo:'Rede de Drenagem (Córregos — raio 20m)',   hit: _hit(gjDrenagem) },
             { grupo:'Licenciamento Ambiental', titulo:'Mancha de Inundação (5 anos)',              hit: _hit(gjMancha5) },
             { grupo:'Licenciamento Ambiental', titulo:'Mancha de Inundação (25 anos)',             hit: _hit(gjMancha25) },
@@ -2630,6 +2668,7 @@ async function _runReport(features) {
             { grupo:'Infraestrutura Urbana', titulo:'Faixa Não Edificável',                        hit: _hit(gjFaixaNE) },
             { grupo:'Infraestrutura Urbana', titulo:'Solo Mole',                                   hit: _hit(gjSoloMole) },
             { grupo:'Infraestrutura Urbana', titulo:'Carta Geotécnica',                            hit: _hit(gjCartaGeo) },
+            { grupo:'Equipamentos', titulo:'Feira Livre',                                          hit: _hit(gjFeiraLivre) },
             { grupo:'Verde', titulo:'Mapeamento de Cobertura Vegetal',                             hit: _hit(gjCobertura) },
             { grupo:'Mananciais', titulo:'Manancial — Guarapiranga',                               hit: _hit(gjManG) },
             { grupo:'Mananciais', titulo:'Manancial — Billings',                                   hit: _hit(gjManB) },
@@ -2805,7 +2844,8 @@ try{giraffeState.addListener(['rawSections'],()=>{
   const hint=document.getElementById('sourceHint');
   if(!hint) return;
   if(n===0) return;
-  if(_lastClickedFeature) return; // clique no mapa tem prioridade — não sobrescreve
+  if(_lastClickedFeature) return; // clique no mapa tem prioridade
+  if(_forcedGeometry) return;     // terreno já selecionado via botão 🖱
   if(n>20){
     hint.innerHTML=`<span style="color:var(--warn)">⚠ ${n} geometrias no layer de desenho.<br>Clique diretamente num polígono no mapa para selecionar o terreno.</span>`;
   } else {
@@ -4068,10 +4108,16 @@ async function analisarBlocoViario(terrainGeom, wkt) {
       const compM = turf.length(line, { units: 'meters' });
       if (compM < 5) continue;
 
-      // Amostra pontos a cada 5m ao longo do eixo
-      const nAmostras = Math.max(3, Math.min(40, Math.floor(compM / 5)));
+      // Amostra pontos a cada 5m, EXCLUINDO 15% de cada extremidade do segmento.
+      // Os extremos caem nos cruzamentos, onde a superfície da rua se abre e o
+      // raio perpendicular atravessa a via transversal, inflando a largura.
+      const margemM = Math.min(compM * 0.15, 12);
+      const iniM = margemM, fimM = compM - margemM;
+      const utilM = fimM - iniM;
+      if (utilM < 5) continue;
+      const nAmostras = Math.max(3, Math.min(40, Math.floor(utilM / 5)));
       for (let i = 0; i <= nAmostras; i++) {
-        const dM = (compM * i) / nAmostras;
+        const dM = iniM + (utilM * i) / nAmostras;
         let pt;
         try { pt = turf.along(line, dM, { units: 'meters' }).geometry.coordinates; } catch (_) { continue; }
 
@@ -4086,19 +4132,24 @@ async function analisarBlocoViario(terrainGeom, wkt) {
         // Perpendicular unitária em graus
         const px = (-dy / len) / cosL, py = (dx / len);
 
-        // Lança raio para os dois lados, passo de 0.5m até 30m
-        let larg = 0;
+        // Lança raio para cada lado, passo de 0.5m até 18m (meia-largura máxima
+        // plausível para via urbana). Se um dos lados atingir o teto sem sair da
+        // superfície, a amostra está num cruzamento — descarta.
+        const MEIA_MAX = 18;
+        let larg = 0, saturou = false;
         for (const sinal of [1, -1]) {
-          for (let d = 0.5; d <= 30; d += 0.5) {
+          let ladoM = MEIA_MAX;
+          for (let d = 0.5; d <= MEIA_MAX; d += 0.5) {
             const passoGrau = d / (R * rad);
             const test = [pt[0] + sinal * px * passoGrau, pt[1] + sinal * py * passoGrau];
             let dentro = false;
             try { dentro = turf.booleanPointInPolygon(turf.point(test), ruaPoly); } catch (_) {}
-            if (!dentro) { larg += d - 0.5; break; }
-            if (d >= 30) { larg += 30; }
+            if (!dentro) { ladoM = d - 0.5; break; }
           }
+          if (ladoM >= MEIA_MAX) saturou = true;
+          larg += ladoM;
         }
-        if (larg > 1 && larg < 60) {
+        if (!saturou && larg > 1) {
           if (!porLogradouro[nome]) porLogradouro[nome] = [];
           porLogradouro[nome].push(larg);
         }
@@ -4109,14 +4160,18 @@ async function analisarBlocoViario(terrainGeom, wkt) {
     if (nomes.length > 0) {
       const linhas = [
         'Largura medida geometricamente sobre a superfície da rua (bbox − quadras − calçadas − praças).',
-        'Valores aproximados, extraídos da base cartográfica do GeoSampa — não substituem levantamento topográfico.',
+        'Valores aproximados (percentis 10/90, amostragem perpendicular a cada 5m, excluindo cruzamentos) — não substituem levantamento topográfico.',
         '',
       ];
       let menorGeral = Infinity, menorNome = '';
       for (const nome of nomes) {
-        const vals = porLogradouro[nome];
-        const min = Math.min(...vals), max = Math.max(...vals);
-        linhas.push(`${nome}: mín. ${min.toFixed(1)}m · máx. ${max.toFixed(1)}m (${vals.length} amostras)`);
+        const vals = [...porLogradouro[nome]].sort((a, b) => a - b);
+        // Percentis 10 e 90 em vez de mín/máx absolutos: outliers residuais de
+        // cruzamentos ou recuos pontuais não distorcem os valores reportados.
+        const p = q => vals[Math.min(vals.length - 1, Math.max(0, Math.round((vals.length - 1) * q)))];
+        const min = p(0.10), max = p(0.90);
+        const mediana = p(0.50);
+        linhas.push(`${nome}: mín. ${min.toFixed(1)}m · máx. ${max.toFixed(1)}m · mediana ${mediana.toFixed(1)}m (${vals.length} amostras)`);
         if (min < menorGeral) { menorGeral = min; menorNome = nome; }
       }
       linhas.splice(2, 0, `Menor largura aferida: ${menorGeral.toFixed(1)}m — ${menorNome}`);
@@ -4938,8 +4993,12 @@ window.pickTerrainAndScan = async function() {
       (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
     if (geoms.length > 0) {
       _forcedGeometry = mergeToSinglePolygon(geoms);
-      log('ok', `Terreno clicado (${geoms.length} polígono(s)) — clique em "Ler Terreno" para varrer.`);
-      setScanStatus('success', '✓ Terreno selecionado — clique "Ler Terreno & Varrer".');
+      const areaSel = turf.area({type:'Feature',geometry:_forcedGeometry,properties:{}});
+      log('ok', `Terreno clicado (${geoms.length} polígono(s), ${areaSel.toFixed(0)}m²) — clique em "Ler Terreno" para varrer.`);
+      setScanStatus('success', `✓ Terreno selecionado (${areaSel.toFixed(0)}m²) — clique "Ler Terreno & Varrer".`);
+      // Atualiza o hint para não mostrar mais o aviso de N geometrias
+      const hintEl = document.getElementById('sourceHint');
+      if (hintEl) hintEl.innerHTML = `<span style="color:var(--green)">✓ Terreno selecionado — ${areaSel.toFixed(0)}m² (${geoms.length} polígono(s))</span>`;
     } else {
       setScanStatus('warn', '⚠ Nenhum polígono clicado.');
     }
@@ -5480,12 +5539,18 @@ window.runEnvoltoria = async function() {
         }
 
         if (resolvedFlowId) {
-          // updateRawSections: flowId e patchType no nível raiz (não dentro de properties)
+          // updateRawSections espera features GeoJSON completas com id em properties
           await rpc.invoke('updateRawSections', [ids.map(id => ({
-            id,
-            flowId: resolvedFlowId,
-            patchType: 'slab',
-            properties: { usage: usageName }
+            type: 'Feature',
+            geometry: { type: 'Polygon', coordinates: [ringCoords] },
+            properties: {
+              id,
+              layerId: 'default',
+              usage: usageName,
+              flowId: resolvedFlowId,
+              patchType: 'slab',
+              sp_tag: 'kv_envoltoria_recuos'
+            }
           }))]);
           log('ok', `updateRawSections OK — flowId=${resolvedFlowId} patchType=slab`);
         } else {
@@ -5510,7 +5575,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V113 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V117 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
