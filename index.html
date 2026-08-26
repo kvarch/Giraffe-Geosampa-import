@@ -5112,16 +5112,18 @@ window.runMedianas = async function() {
       const mCx = (lineA.cx + lineV.cx) / 2;
       const mCy = (lineA.cy + lineV.cy) / 2;
 
-      // Direção: média das duas (normalmente quase idênticas)
-      let ux = lineA.ux + lineV.ux, uy = lineA.uy + lineV.uy;
+      // Direção: garante mesmo sentido antes de somar (PCA pode devolver direções opostas)
+      let uxA=lineA.ux, uyA=lineA.uy, uxV=lineV.ux, uyV=lineV.uy;
+      if (uxA*uxV + uyA*uyV < 0) { uxV=-uxV; uyV=-uyV; }
+      let ux = uxA+uxV, uy = uyA+uyV;
       const nm = Math.sqrt(ux*ux+uy*uy);
-      if (nm < 1e-10) continue;
-      ux /= nm; uy /= nm;
+      if (nm < 1e-10) { ux=uxA; uy=uyA; } else { ux/=nm; uy/=nm; }
 
       // Range longitudinal dos pontos da Alvo
       const refCx = lineA.cx, refCy = lineA.cy;
       const projs = ptsA.map(p => { const m = _toM(p,refCx,refCy); return m[0]*lineA.ux+m[1]*lineA.uy; });
       const lo = Math.min(...projs), hi = Math.max(...projs);
+      log('info',`Medianas: face vizId=${grupo[0].vizId} pts=${grupo.length} dir=(${ux.toFixed(3)},${uy.toFixed(3)}) span=${(hi-lo).toFixed(1)}m`);
 
       // Largura média
       const dists = grupo.map(p => {
@@ -5165,7 +5167,8 @@ window.runMedianas = async function() {
       const useStart = (tStart !== null && Math.abs(tStart-center) < span*2) ? tStart : cur.lo;
       const useEnd   = (tEnd   !== null && Math.abs(tEnd  -center) < span*2) ? tEnd   : cur.hi;
 
-      if (useEnd <= useStart) continue;
+      log('info',`Medianas: face ${i+1} vizId=${cur.vizId} span=${span.toFixed(1)} tStart=${tStart?.toFixed(1)} tEnd=${tEnd?.toFixed(1)} useStart=${useStart.toFixed(1)} useEnd=${useEnd.toFixed(1)}`);
+      if (useEnd <= useStart) { log('warn',`Medianas: face ${i+1} descartada — useEnd(${useEnd.toFixed(1)}) <= useStart(${useStart.toFixed(1)})`); continue; }
 
       const ptS = _fromM([curP[0]+useStart*D[0], curP[1]+useStart*D[1]], cur.refCx, cur.refCy);
       const ptE = _fromM([curP[0]+useEnd  *D[0], curP[1]+useEnd  *D[1]], cur.refCx, cur.refCy);
@@ -5215,7 +5218,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V94 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V95 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
