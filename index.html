@@ -4916,53 +4916,66 @@ window.runMedianas = async function() {
   document.getElementById('medianasResult').style.display  = 'none';
 
   // ── Terreno — ordem de prioridade ──
-  // 1. getSelectedFeatures — o que está selecionado no mapa agora (independente)
-  // 2. currentGeometry    — resultado da última varredura ("Ler Terreno")
-  // 3. _kvTerrainGeomForReport — geometria usada no último relatório gerado
-  // Não usa pickRawSections (retorna qualquer rawSection do projeto, podendo
-  // ser de outra sessão ou região).
+  // 1. _lastClickedFeature — polígono clicado no mapa via mapSelectCoord (mais confiável)
+  // 2. getSelectedFeatures — seleção atual do Giraffe
+  // 3. currentGeometry     — resultado da última varredura ("Ler Terreno")
+  // 4. _kvTerrainGeomForReport — geometria do último relatório gerado
+  // 5. Pede novo clique no mapa via mapSelectCoord (aguarda interação)
+  // NÃO usa pickRawSections: retorna rawSections do projeto independente do clique,
+  // podendo pegar terrenos de outras sessões.
   let terGeom = null, terGeomSource = '';
   setMedianasStatus('loading', 'Buscando terreno selecionado...');
 
-  // 1. Seleção atual no mapa
-  try {
-    const sel = await rpc.invoke('getSelectedFeatures', []);
-    if (sel?.length > 0) {
-      const pols = sel.filter(f => f.geometry &&
-        (f.geometry.type==='Polygon' || f.geometry.type==='MultiPolygon'));
-      if (pols.length > 0) { terGeom = mergeToSinglePolygon(pols); terGeomSource = 'seleção no mapa'; }
-    }
-  } catch(_) {}
+  // 1. Último polígono clicado no mapa
+  if (_lastClickedFeature?.geometry &&
+      (_lastClickedFeature.geometry.type==='Polygon'||_lastClickedFeature.geometry.type==='MultiPolygon')) {
+    terGeom = _lastClickedFeature.geometry;
+    terGeomSource = 'clique no mapa (último polígono selecionado)';
+  }
 
-  // 2. currentGeometry (última varredura)
+  // 2. getSelectedFeatures
+  if (!terGeom) {
+    try {
+      const sel = await rpc.invoke('getSelectedFeatures', []);
+      if (sel?.length > 0) {
+        const pols = sel.filter(f => f.geometry &&
+          (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
+        if (pols.length > 0) { terGeom = mergeToSinglePolygon(pols); terGeomSource = 'getSelectedFeatures'; }
+      }
+    } catch(_) {}
+  }
+
+  // 3. currentGeometry (última varredura)
   if (!terGeom && currentGeometry) {
     terGeom = currentGeometry; terGeomSource = 'última varredura (Ler Terreno)';
   }
 
-  // 3. Geometria do último relatório gerado
+  // 4. Geometria do último relatório gerado
   if (!terGeom && window._kvTerrainGeomForReport) {
     terGeom = window._kvTerrainGeomForReport; terGeomSource = 'último relatório gerado';
   }
 
-  // 4. Fallback: pede clique explícito no mapa (pickRawSections aguarda interação)
+  // 5. Pede clique explícito: aguarda mapSelectCoord + getQueriedFeature
   if (!terGeom) {
-    setMedianasStatus('loading', 'Clique no terreno no mapa para selecionar...');
-    log('info', 'Medianas: aguardando clique no terreno...');
+    setMedianasStatus('loading', 'Clique no terreno no mapa...');
+    log('info', 'Medianas: aguardando clique no mapa (mapSelectCoord)...');
     document.getElementById('btnMedianas').disabled = true;
     try {
-      const secs = await rpc.invoke('pickRawSections', []);
-      const geoms = (secs||[]).filter(f => f.geometry &&
-        (f.geometry.type==='Polygon'||f.geometry.type==='MultiPolygon'));
-      if (geoms.length > 0) {
-        terGeom = mergeToSinglePolygon(geoms);
-        terGeomSource = 'clique no mapa';
-      } else {
-        setMedianasStatus('warn', '⚠ Nenhum terreno clicado. Clique sobre o polígono do terreno no mapa.');
-        log('warn', 'Medianas: clique cancelado ou sem geometria.');
-        return;
-      }
+      // Aguarda até 30s por um clique no mapa que popule _lastClickedFeature
+      terGeom = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Timeout: nenhum terreno clicado em 30s')), 30000);
+        const check = setInterval(() => {
+          if (_lastClickedFeature?.geometry &&
+              (_lastClickedFeature.geometry.type==='Polygon'||_lastClickedFeature.geometry.type==='MultiPolygon')) {
+            clearInterval(check); clearTimeout(timeout);
+            resolve(_lastClickedFeature.geometry);
+          }
+        }, 200);
+      });
+      terGeomSource = 'clique no mapa';
     } catch(e) {
-      setMedianasStatus('error', `Erro ao selecionar terreno: ${e.message}`);
+      setMedianasStatus('warn', '⚠ Clique no terreno no mapa e tente novamente.');
+      log('warn', `Medianas: ${e.message}`);
       return;
     } finally {
       document.getElementById('btnMedianas').disabled = false;
@@ -5066,10 +5079,13 @@ window.runMedianas = async function() {
     const medLines = [];
 
     for (const grupo of grupos) {
-      if (grupo.length < 4) continue;
+      if (grupo.length < 2) continue;
       const ptsA = grupo.map(p => p.pt);
       const ptsV = grupo.map(p => p.near).filter(Boolean);
-      if (ptsV.length < 4) continue;
+      if (ptsV.length < 2) {
+        log('warn', `Medianas: face vizId=${grupo[0].vizId} descartada — apenas ${ptsV.length} pts projetados válidos de ${grupo.length}`);
+        continue;
+      }
 
       const lineA = _fitLine(ptsA);
       const lineV = _fitLine(ptsV);
@@ -5180,7 +5196,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V90 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V91 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
