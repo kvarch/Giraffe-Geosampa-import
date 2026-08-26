@@ -5212,11 +5212,14 @@ window.runMedianas = async function() {
       { type: 'FeatureCollection', features: finalFeatures }
     ]);
 
+    window._medianasGeradas = finalFeatures; // salva para uso no botão "Gerar Envoltória"
+
     document.getElementById('medianasResultBody').innerHTML =
       resumo.map(r => `<div style="padding:3px 0;border-bottom:1px solid var(--outline-variant)">${r}</div>`).join('') +
-      `<div style="margin-top:8px;color:var(--kv-blue);font-weight:600">${finalFeatures.length} mediana(s) → layer "Envoltória · Medianas"</div>`;
+      `<div style="margin-top:8px;color:var(--kv-blue);font-weight:600">${finalFeatures.length} mediana(s) → layer "Envoltória · Medianas"</div>` +
+      `<button class="btn btn-primary" onclick="runEnvoltoria()" style="width:100%;margin-top:10px">🏗 Gerar Envoltória de Recuos</button>`;
     document.getElementById('medianasResult').style.display = 'block';
-    setMedianasStatus('success', `${finalFeatures.length} mediana(s) gerada(s) com sucesso`);
+    setMedianasStatus('success', `${finalFeatures.length} mediana(s) gerada(s) — clique "Gerar Envoltória" para criar o polígono.`);
 
   } catch(err) {
     setMedianasStatus('error', `Erro: ${err.message}`);
@@ -5226,11 +5229,145 @@ window.runMedianas = async function() {
 };
 
 
+
+// ══════════════════════════════════════════════════════════════════
+// ENVOLTÓRIA DE RECUOS — Gera polígono a partir das medianas
+// ══════════════════════════════════════════════════════════════════
+window._medianasGeradas = null;
+
+window.runEnvoltoria = async function() {
+  const medianas = window._medianasGeradas;
+  if (!medianas || medianas.length < 2) {
+    setMedianasStatus('warn', '⚠ Gere as linhas medianas primeiro.');
+    log('warn', 'Envoltória: sem medianas geradas.');
+    return;
+  }
+
+  setMedianasStatus('loading', 'Buscando "Envoltória de Recuos" na biblioteca...');
+  try {
+    // ── 1. Busca o content pack pelo nome ──
+    const packs = await rpc.invoke('fetchContentPacks', []);
+    log('info', `Envoltória: ${packs?.length ?? 0} pack(s) disponíveis`);
+
+    // Encontra o pack "envoltória de recuos" (case-insensitive, sem acento)
+    const normalize = s => (s||'').toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+
+    const targetPack = (packs||[]).find(p =>
+      normalize(p.name||p.title||'').includes('envoltoria de recuos') ||
+      normalize(p.name||p.title||'').includes('envoltoria recuos') ||
+      normalize(p.name||p.title||'').includes('buildable envelope')
+    );
+
+    if (!targetPack) {
+      // Loga todos os packs para diagnóstico
+      (packs||[]).forEach(p => log('info', `  pack: "${p.name||p.title}" id=${p.id}`));
+      setMedianasStatus('error', '⚠ Pack "Envoltória de Recuos" não encontrado. Veja o log.');
+      log('warn', 'Envoltória: verifique o nome exato do pack no log acima.');
+      return;
+    }
+    log('ok', `Envoltória: pack encontrado — "${targetPack.name||targetPack.title}"`);
+
+    // ── 2. Lê o conteúdo do pack para extrair o template de rawSection ──
+    setMedianasStatus('loading', 'Lendo conteúdo do pack...');
+    const packRef = targetPack.url || targetPack.fileId || targetPack.id;
+    const contents = await rpc.invoke('fetchPackContents', [packRef]);
+    log('info', `Envoltória: estrutura do pack: ${JSON.stringify(Object.keys(contents||{}))}`);
+
+    // O pack contém rawSections (features pré-configuradas com usage + flow)
+    // Pega o primeiro feature do pack como template
+    const features = contents?.rawSections?.features
+      || contents?.features
+      || (Array.isArray(contents?.rawSections) ? contents.rawSections : null)
+      || [];
+
+    const templateFeature = Array.isArray(features) ? features[0]
+      : Object.values(features)[0];
+
+    if (!templateFeature) {
+      log('warn', `Envoltória: estrutura completa do pack: ${JSON.stringify(contents).slice(0,500)}`);
+      setMedianasStatus('error', '⚠ Nenhum feature encontrado no pack. Veja o log.');
+      return;
+    }
+    log('ok', `Envoltória: template extraído — usage="${templateFeature.properties?.usage||'(sem usage)'}", flow="${templateFeature.properties?.flowId||'(sem flow)'}", props=${JSON.stringify(Object.keys(templateFeature.properties||{}))}`);
+
+    // ── 3. Monta polígono da envoltória a partir dos endpoints das medianas ──
+    setMedianasStatus('loading', 'Calculando polígono da envoltória...');
+
+    const endpoints = medianas.map(f => {
+      const c = f.geometry.coordinates;
+      return { start: c[0], end: c[c.length-1] };
+    });
+
+    const allX = endpoints.flatMap(e=>[e.start[0],e.end[0]]);
+    const allY = endpoints.flatMap(e=>[e.start[1],e.end[1]]);
+    const cx = allX.reduce((s,v)=>s+v,0)/allX.length;
+    const cy = allY.reduce((s,v)=>s+v,0)/allY.length;
+
+    // Para cada mediana, pega o endpoint externo (mais longe do centro)
+    // ordena em sentido anti-horário pelo ângulo do ponto externo
+    const outerPts = endpoints.map(ep => {
+      const d0 = (ep.start[0]-cx)**2+(ep.start[1]-cy)**2;
+      const d1 = (ep.end[0]  -cx)**2+(ep.end[1]  -cy)**2;
+      return d0 > d1 ? ep.start : ep.end;
+    });
+    outerPts.sort((a,b) => Math.atan2(a[1]-cy,a[0]-cx) - Math.atan2(b[1]-cy,b[0]-cx));
+    outerPts.push(outerPts[0]); // fecha o anel
+
+    if (outerPts.length < 4) {
+      setMedianasStatus('warn', '⚠ Pontos insuficientes para o polígono.');
+      return;
+    }
+    log('info', `Envoltória: polígono com ${outerPts.length-1} vértices`);
+
+    // ── 4. Clona o template substituindo a geometria ──
+    const envFeature = {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [outerPts] },
+      properties: {
+        ...templateFeature.properties,
+        layerId: templateFeature.properties?.layerId || 'default',
+        sp_tag: 'kv_envoltoria_recuos'
+      }
+    };
+    // Remove campos que não devem ser copiados (IDs antigos, posição, etc.)
+    delete envFeature.properties.id;
+    delete envFeature.properties.projectId;
+
+    // ── 5. Importa o pack no projeto (garante que usages/flows estejam disponíveis) ──
+    setMedianasStatus('loading', 'Importando pack no projeto...');
+    try {
+      await rpc.invoke('addContentPackToProject', [packRef]);
+      log('ok', 'Pack adicionado ao projeto.');
+    } catch(e) {
+      // Pack pode já estar no projeto — continua mesmo assim
+      log('warn', `addContentPackToProject: ${e.message} (continuando...)`);
+    }
+
+    // ── 6. Importa o rawSection com o polígono da envoltória ──
+    setMedianasStatus('loading', 'Importando envoltória no Giraffe...');
+    await rpc.invoke('importRawSections', [{
+      type: 'FeatureCollection',
+      features: [envFeature]
+    }]);
+
+    const usageName = envFeature.properties?.usage || 'Envelope';
+    setMedianasStatus('success', `✓ Envoltória "${usageName}" criada no Giraffe.`);
+    log('ok', `Envoltória importada com usage "${usageName}".`);
+
+  } catch(err) {
+    setMedianasStatus('error', `Erro: ${err.message}`);
+    log('err', `Envoltória: ${err.message}`);
+    console.error('[Envoltória]', err);
+  }
+};
+
+
 log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V96 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V99 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
