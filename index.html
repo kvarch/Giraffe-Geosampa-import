@@ -5431,29 +5431,11 @@ window.runEnvoltoria = async function() {
 
     // ── 3. Busca o flowId do pack (só se ainda não tivermos) ──
     // flowId confirmado pelo log: "613e6607cb6e4fbd8bddca676202eb85"
-    // usage confirmado: "Envelope"
-    // Hardcoda esses valores pois já foram verificados empiricamente.
-    // Se o projeto usar um pack diferente, tenta buscar dinamicamente.
-    let usageName = 'Envelope';
-    let flowId = null;
+    // usage confirmado empiricamente pelos logs: "Envelope"
+    // flowId será resolvido via getProjectFlows (o flow já está no projeto)
+    const usageName = 'Envelope';
 
-    try {
-      const packs = await rpc.invoke('fetchContentPacks', []);
-      const normPk = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
-      const pack = (packs||[]).find(p => normPk(p.name||p.title||'').includes('envoltoria'));
-      if (pack) {
-        const packRef = pack.url || pack.fileId || pack.id;
-        const contents = await rpc.invoke('fetchPackContents', [packRef]);
-        const flowsRaw = contents?.flows;
-        const flowsArr = Array.isArray(flowsRaw) ? flowsRaw
-          : Object.entries(flowsRaw||{}).map(([k,v])=>({id:k,...v}));
-        if (flowsArr[0]?.id) flowId = flowsArr[0].id;
-        // Garante pack no projeto
-        try { await rpc.invoke('addContentPackToProject', [packRef]); } catch(_) {}
-      }
-    } catch(e) { log('warn', `Busca pack: ${e.message}`); }
-
-    log('info', `Envoltória: usage="${usageName}" flowId=${flowId}`);
+    log('info', `Envoltória: usage="${usageName}" — flowId será resolvido via getProjectFlows`);
 
     // ── 4. Cria a geometria via createRawSections ──
     setMedianasStatus('loading', 'Criando geometria no Giraffe...');
@@ -5472,21 +5454,45 @@ window.runEnvoltoria = async function() {
     const ids = await rpc.invoke('createRawSections', [[feature]]);
     log('ok', `createRawSections OK — ids: ${JSON.stringify(ids)}`);
 
-    // ── 5. Aplica usage e flow via updateRawSections ──
-    if (ids?.length > 0 && flowId) {
-      setMedianasStatus('loading', 'Aplicando usage e flow...');
+    // ── 5. Busca o flowId real no projeto e aplica via updateRawSections ──
+    if (ids?.length > 0) {
+      setMedianasStatus('loading', 'Aplicando flow...');
       try {
-        await rpc.invoke('updateRawSections', [ids.map(id => ({
-          id,
-          properties: {
-            usage: usageName,
-            flowId,
-            patchType: 'slab'
+        // getProjectFlows retorna objeto keyed by id
+        const projectFlows = await rpc.invoke('getProjectFlows', []);
+        log('info', `Flows no projeto: ${JSON.stringify(Object.keys(projectFlows||{}))}`);
+
+        // Encontra o flow "Buildable Envelope" no projeto
+        let resolvedFlowId = null; // será resolvido via getProjectFlows
+        const flowEntries = Object.entries(projectFlows || {});
+        for (const [fid, flow] of flowEntries) {
+          const fname = (flow.name || flow.title || '').toLowerCase();
+          log('info', `  flow: "${flow.name||flow.title}" id=${fid}`);
+          if (fname.includes('buildable') || fname.includes('envelope') || fname.includes('envolt')) {
+            resolvedFlowId = fid;
+            log('ok', `Flow encontrado no projeto: "${flow.name||flow.title}" id=${fid}`);
+            break;
           }
-        }))]);
-        log('ok', 'updateRawSections OK — usage e flow aplicados.');
+        }
+        if (!resolvedFlowId && flowEntries.length > 0) {
+          resolvedFlowId = flowEntries[0][0]; // usa o primeiro disponível
+          log('warn', `Flow padrão: usando primeiro flow do projeto id=${resolvedFlowId}`);
+        }
+
+        if (resolvedFlowId) {
+          // updateRawSections: flowId e patchType no nível raiz (não dentro de properties)
+          await rpc.invoke('updateRawSections', [ids.map(id => ({
+            id,
+            flowId: resolvedFlowId,
+            patchType: 'slab',
+            properties: { usage: usageName }
+          }))]);
+          log('ok', `updateRawSections OK — flowId=${resolvedFlowId} patchType=slab`);
+        } else {
+          log('warn', 'Nenhum flow encontrado no projeto. Geometria criada sem flow.');
+        }
       } catch(e) {
-        log('warn', `updateRawSections: ${e.message} (geometria criada mas sem flow)`);
+        log('warn', `Aplicar flow: ${e.message}`);
       }
     }
 
@@ -5504,7 +5510,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V111 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V113 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
