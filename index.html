@@ -5376,17 +5376,34 @@ window._medianasGeradas = null;
 window.runEnvoltoria = async function() {
   setMedianasStatus('loading', 'Lendo layer "Envoltória · Medianas"...');
   try {
-    // ── 1. Lê as linhas medianas do layer do Giraffe ──
-    const layerFC = await rpc.invoke('getLayerContents', ['Envoltória · Medianas']);
-    const linhas = (layerFC?.features || []).filter(f =>
-      f.geometry?.type === 'LineString' || f.geometry?.type === 'MultiLineString');
+    // ── 1. Lê as linhas medianas ──
+    // Tenta primeiro window._medianasGeradas (geradas nesta sessão, mais confiável)
+    // Fallback: getLayerContents do layer "Envoltória · Medianas"
+    let linhas = [];
+
+    if (window._medianasGeradas?.length >= 2) {
+      linhas = window._medianasGeradas.filter(f =>
+        f.geometry?.type === 'LineString' || f.geometry?.type === 'MultiLineString');
+      log('info', `Envoltória: ${linhas.length} mediana(s) de window._medianasGeradas`);
+    }
 
     if (linhas.length < 2) {
-      setMedianasStatus('warn', `⚠ Layer "Envoltória · Medianas" não encontrado ou sem linhas suficientes (${linhas.length}). Gere as medianas primeiro.`);
-      log('warn', `Envoltória: ${linhas.length} linha(s) encontrada(s) no layer.`);
+      try {
+        // getLayerContents requer bounds — usa viewport atual
+        const bounds = giraffeState.get('mapBounds') || giraffeState.get('viewport');
+        const layerFC = await rpc.invoke('getLayerContents', ['Envoltória · Medianas', bounds]);
+        const fromLayer = (layerFC?.features || []).filter(f =>
+          f.geometry?.type === 'LineString' || f.geometry?.type === 'MultiLineString');
+        if (fromLayer.length >= 2) { linhas = fromLayer; log('info', `Envoltória: ${linhas.length} mediana(s) do layer Giraffe`); }
+      } catch(e) { log('warn', `getLayerContents: ${e.message}`); }
+    }
+
+    if (linhas.length < 2) {
+      setMedianasStatus('warn', `⚠ Nenhuma mediana encontrada (${linhas.length}). Gere as medianas primeiro.`);
+      log('warn', `Envoltória: ${linhas.length} linha(s) — gere as medianas antes.`);
       return;
     }
-    log('ok', `Envoltória: ${linhas.length} mediana(s) lidas do layer.`);
+    log('ok', `Envoltória: ${linhas.length} mediana(s) prontas para formar o polígono.`);
 
     // ── 2. Extrai endpoints de cada linha ──
     // Cada mediana é um segmento [ptStart, ..., ptEnd]
@@ -5475,17 +5492,14 @@ window.runEnvoltoria = async function() {
     // ── 8. Importa o rawSection com o polígono ──
     setMedianasStatus('loading', 'Importando envoltória no Giraffe...');
     await rpc.invoke('importRawSections', [{
-      type: 'FeatureCollection',
-      features: [{
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [ringCoords] },
-        properties: {
-          layerId: 'default',
-          usage: usageName,
-          sp_tag: 'kv_envoltoria_recuos',
-          ...(flowId ? { flowId } : {})
-        }
-      }]
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [ringCoords] },
+      properties: {
+        layerId: 'default',
+        usage: usageName,
+        sp_tag: 'kv_envoltoria_recuos',
+        ...(flowId ? { flowId } : {})
+      }
     }]);
 
     setMedianasStatus('success', `✓ Envoltória "${usageName}" criada a partir das medianas.`);
@@ -5503,7 +5517,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V106 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V107 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
