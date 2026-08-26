@@ -5426,8 +5426,8 @@ window.runEnvoltoria = async function() {
       return Math.atan2(mA[1]-cy, mA[0]-cx) - Math.atan2(mB[1]-cy, mB[0]-cx);
     });
 
-    // ── 4. Monta o anel: para cada par adjacente (i, i+1),
-    //    o vértice de canto é o endpoint de sorted[i] mais próximo de sorted[i+1] ──
+    // ── 4. Monta o anel: o vértice entre medianas i e i+1 é a média
+    //    dos dois endpoints mais próximos entre si (ponto de cruzamento) ──
     const N = sorted.length;
     const dist2 = (a,b) => (a[0]-b[0])**2+(a[1]-b[1])**2;
     const ringCoords = [];
@@ -5435,10 +5435,23 @@ window.runEnvoltoria = async function() {
     for (let i = 0; i < N; i++) {
       const cur  = sorted[i];
       const next = sorted[(i+1)%N];
-      const minA = Math.min(dist2(cur.start, next.start), dist2(cur.start, next.end));
-      const minB = Math.min(dist2(cur.end,   next.start), dist2(cur.end,   next.end));
-      // Endpoint mais PRÓXIMO do próximo segmento = canto de cruzamento
-      ringCoords.push(minA < minB ? cur.start : cur.end);
+
+      // Encontra o par de endpoints mais próximos entre cur e next
+      const pairs = [
+        { dC: cur.start, dN: next.start, d: dist2(cur.start, next.start) },
+        { dC: cur.start, dN: next.end,   d: dist2(cur.start, next.end)   },
+        { dC: cur.end,   dN: next.start, d: dist2(cur.end,   next.start) },
+        { dC: cur.end,   dN: next.end,   d: dist2(cur.end,   next.end)   },
+      ];
+      const best = pairs.reduce((a,b) => b.d < a.d ? b : a);
+
+      // Vértice = média dos dois endpoints mais próximos (ponto de cruzamento)
+      const corner = [
+        (best.dC[0] + best.dN[0]) / 2,
+        (best.dC[1] + best.dN[1]) / 2
+      ];
+      ringCoords.push(corner);
+      log('info', `  canto ${i+1}: cur.${best.dC===cur.start?'start':'end'}=[${best.dC.map(v=>v.toFixed(5))}] next.${best.dN===next.start?'start':'end'}=[${best.dN.map(v=>v.toFixed(5))}] → corner=[${corner.map(v=>v.toFixed(5))}]`);
     }
     ringCoords.push(ringCoords[0]); // fecha o anel
 
@@ -5490,17 +5503,23 @@ window.runEnvoltoria = async function() {
     }
 
     // ── 8. Importa o rawSection com o polígono ──
+    // importRawSections recebe FeatureCollection como único argumento
     setMedianasStatus('loading', 'Importando envoltória no Giraffe...');
-    await rpc.invoke('importRawSections', [{
-      type: 'Feature',
-      geometry: { type: 'Polygon', coordinates: [ringCoords] },
-      properties: {
-        layerId: 'default',
-        usage: usageName,
-        sp_tag: 'kv_envoltoria_recuos',
-        ...(flowId ? { flowId } : {})
+    await rpc.invoke('importRawSections', [
+      {
+        type: 'FeatureCollection',
+        features: [{
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [ringCoords] },
+          properties: {
+            layerId: 'default',
+            usage: usageName,
+            sp_tag: 'kv_envoltoria_recuos',
+            ...(flowId ? { flowId } : {})
+          }
+        }]
       }
-    }]);
+    ]);
 
     setMedianasStatus('success', `✓ Envoltória "${usageName}" criada a partir das medianas.`);
     log('ok', `Envoltória importada — usage="${usageName}" flowId=${flowId}.`);
@@ -5517,7 +5536,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V107 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V109 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
