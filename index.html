@@ -5140,7 +5140,16 @@ window.runMedianas = async function() {
 
     if (medLines.length === 0) { setMedianasStatus('warn', '⚠ Nenhuma mediana calculada.'); return; }
 
-    // ── 8. Estende até interseções ──
+    // ── 8. Ordena medianas por ângulo ao redor do centróide da quadra ──
+    // Sem isso, prev/next no loop de interseções não são os vizinhos geométricos corretos
+    const allMCx = medLines.reduce((s,m)=>s+m.cx,0)/medLines.length;
+    const allMCy = medLines.reduce((s,m)=>s+m.cy,0)/medLines.length;
+    medLines.sort((a,b) => {
+      const aM = _toM([a.cx,a.cy], allMCx, allMCy);
+      const bM = _toM([b.cx,b.cy], allMCx, allMCy);
+      return Math.atan2(aM[1],aM[0]) - Math.atan2(bM[1],bM[0]);
+    });
+
     const N = medLines.length;
     const finalFeatures = [];
     const resumo = [];
@@ -5164,11 +5173,14 @@ window.runMedianas = async function() {
       const tStart = _intersectLines(curP, D, prevP, Dp);
       const tEnd   = _intersectLines(curP, D, nextP, Dn);
 
-      const useStart = (tStart !== null && Math.abs(tStart-center) < span*2) ? tStart : cur.lo;
-      const useEnd   = (tEnd   !== null && Math.abs(tEnd  -center) < span*2) ? tEnd   : cur.hi;
+      let useStart = (tStart !== null && Math.abs(tStart-center) < span*2) ? tStart : cur.lo;
+      let useEnd   = (tEnd   !== null && Math.abs(tEnd  -center) < span*2) ? tEnd   : cur.hi;
 
-      log('info',`Medianas: face ${i+1} vizId=${cur.vizId} span=${span.toFixed(1)} tStart=${tStart?.toFixed(1)} tEnd=${tEnd?.toFixed(1)} useStart=${useStart.toFixed(1)} useEnd=${useEnd.toFixed(1)}`);
-      if (useEnd <= useStart) { log('warn',`Medianas: face ${i+1} descartada — useEnd(${useEnd.toFixed(1)}) <= useStart(${useStart.toFixed(1)})`); continue; }
+      // Corrige inversão quando a interseção retorna sentido errado
+      if (useEnd < useStart) { const tmp=useStart; useStart=useEnd; useEnd=tmp; }
+
+      log('info',`Medianas: face ${i+1} vizId=${cur.vizId} span=${span.toFixed(1)} useStart=${useStart.toFixed(1)} useEnd=${useEnd.toFixed(1)}`);
+      if (useEnd <= useStart) { log('warn',`Medianas: face ${i+1} descartada`); continue; }
 
       const ptS = _fromM([curP[0]+useStart*D[0], curP[1]+useStart*D[1]], cur.refCx, cur.refCy);
       const ptE = _fromM([curP[0]+useEnd  *D[0], curP[1]+useEnd  *D[1]], cur.refCx, cur.refCy);
@@ -5218,7 +5230,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V95 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V96 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
