@@ -2110,9 +2110,14 @@ async function _runReport(features) {
   setReportStatus('loading', `Consultando GeoSampa com ${filterMode === 'intersects' ? 'polígono exato' : 'BBOX'}...`);
   log('info', `Relatório: filtro ${filterMode.toUpperCase()} — ${wkt.slice(0,60)}...`);
 
+  // Relatório visual: interseção com o polígono EXATO do terreno, sem buffer.
+  // (o relatório PDF usa buffers próprios por camada — não alterar.)
+  let _fetchFalhas = 0;
   const fetch = filterMode === 'intersects'
     ? (id, mf) => fetchWFSByGeom(id, wkt, mf)
-    : (id, mf) => fetchWFS(id, expandBBOX(currentBBOX, 5), mf);
+        .catch(e => { _fetchFalhas++; log('warn', `WFS ${id}: ${e.message}`); return null; })
+    : (id, mf) => fetchWFS(id, expandBBOX(currentBBOX, 5), mf)
+        .catch(e => { _fetchFalhas++; log('warn', `WFS ${id}: ${e.message}`); return null; });
 
   try {
     const [gjZone,gjOU,gjEixo,gjTombado,gjManG,gjManB,gjRisco,gjInund,gjZEIS,
@@ -2126,65 +2131,65 @@ async function _runReport(features) {
            gjAreaCedida,gjCAP,gjEstMetro,gjEstMetroProj,gjMetroLinhaProj,
            gjEstTrem,gjEstTremProj,gjTremLinhaProj,gjFerroviaMDC,
            gjTCA,gjFeiraLivre,gjSubsetorOU] = await Promise.all([
-      fetch('geoportal:zoneamento_2016_map1', 10).catch(()=>null),
-      fetch('geoportal:operacao_urbana', 5).catch(()=>null),
-      fetch('geoportal:eixo_ativado_decreto', 5).catch(()=>null),
-      fetch('geoportal:patrimonio_cultural_bem_tombado', 5).catch(()=>null),
-      fetch('geoportal:manancial_guarapiranga', 2).catch(()=>null),
-      fetch('geoportal:manancial_billings', 2).catch(()=>null),
-      fetch('geoportal:area_risco_geologico', 5).catch(()=>null),
-      fetch('geoportal:area_inundavel', 5).catch(()=>null),
-      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONPRESP', 5).catch(()=>null),
+      fetch('geoportal:zoneamento_2016_map1', 10),
+      fetch('geoportal:operacao_urbana', 5),
+      fetch('geoportal:eixo_ativado_decreto', 5),
+      fetch('geoportal:patrimonio_cultural_bem_tombado', 5),
+      fetch('geoportal:manancial_guarapiranga', 2),
+      fetch('geoportal:manancial_billings', 2),
+      fetch('geoportal:area_risco_geologico', 5),
+      fetch('geoportal:area_inundavel', 5),
+      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONPRESP', 5),
       // novos — checklist completo
-      fetch('geoportal:patrimonio_cultural_acervo_tombado', 3).catch(()=>null),
-      fetch('geoportal:patrimonio_cultural_bairro_ambiental', 3).catch(()=>null),
-      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONDEPHAAT', 3).catch(()=>null),
-      fetch('geoportal:patrimonio_cultural_area_envoltoria_IPHAN', 3).catch(()=>null),
-      fetch('geoportal:cit_cidadao', 3).catch(()=>null),
-      fetch('geoportal:perimetro_zepec', 3).catch(()=>null),
-      fetch('geoportal:pde_macroarea_lei_18209', 3).catch(()=>null),
-      fetch('geoportal:pde2014_v_mcrz_01_map', 3).catch(()=>null),
-      fetch('geoportal:aiu_perimetro_pinheiros', 3).catch(()=>null),
-      fetch('geoportal:enquadramento_vila', 3).catch(()=>null),
-      fetch('geoportal:deliberacao_ctlu', 3).catch(()=>null),
-      fetch('geoportal:planta_dup_dis_pd', 3).catch(()=>null),
-      fetch('geoportal:edificacao', 3).catch(()=>null),
-      fetch('geoportal:pde_viario_estrutural', 3).catch(()=>null),
-      fetch('geoportal:pde_intervencao_pontual_melhoramento_viario', 3).catch(()=>null),
-      fetch('geoportal:pde_drenagem_acao_prioritaria_linear', 3).catch(()=>null),
-      fetch('geoportal:pde_drenagem_acao_prioritaria_pontual', 3).catch(()=>null),
-      fetch('geoportal:linha_alta_tensao', 3).catch(()=>null),
-      fetch('geoportal:torre_alta_tensao', 3).catch(()=>null),
-      fetch('geoportal:geoconvias_lei_melhoramento_vigente', 3).catch(()=>null),
-      fetch('geoportal:geoconvias_faixa_nao_edificavel', 3).catch(()=>null),
-      fetch('geoportal:solo_mole', 3).catch(()=>null),
-      fetch('geoportal:carta_geotecnica', 3).catch(()=>null),
-      fetch('geoportal:cobertura_vegetal', 3).catch(()=>null),
-      fetch('geoportal:drenagem', 3).catch(()=>null),
-      fetch('geoportal:GEOSAMPA_area_contaminada_sigac', 3).catch(()=>null),
-      fetch('geoportal:area_contaminada_reabilitada_svma', 3).catch(()=>null),
-      fetch('geoportal:GEOSAMPA_heliponto', 3).catch(()=>null),
-      fetch('geoportal:linha_metro', 3).catch(()=>null),
-      fetch('geoportal:area_influencia_metro', 3).catch(()=>null),
-      fetch('geoportal:linha_trem', 3).catch(()=>null),
-      fetch('geoportal:area_influencia_trem', 3).catch(()=>null),
-      fetch('geoportal:mancha_inundacao_5', 3).catch(()=>null),
-      fetch('geoportal:mancha_inundacao_25', 3).catch(()=>null),
-      fetch('geoportal:mancha_inundacao_100', 3).catch(()=>null),
-      fetch('geoportal:segmento_logradouro', 3).catch(()=>null),
+      fetch('geoportal:patrimonio_cultural_acervo_tombado', 3),
+      fetch('geoportal:patrimonio_cultural_bairro_ambiental', 3),
+      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONDEPHAAT', 3),
+      fetch('geoportal:patrimonio_cultural_area_envoltoria_IPHAN', 3),
+      fetch('geoportal:cit_cidadao', 3),
+      fetch('geoportal:perimetro_zepec', 3),
+      fetch('geoportal:pde_macroarea_lei_18209', 3),
+      fetch('geoportal:pde2014_v_mcrz_01_map', 3),
+      fetch('geoportal:aiu_perimetro_pinheiros', 3),
+      fetch('geoportal:enquadramento_vila', 3),
+      fetch('geoportal:deliberacao_ctlu', 3),
+      fetch('geoportal:planta_dup_dis_pd', 3),
+      fetch('geoportal:edificacao', 3),
+      fetch('geoportal:pde_viario_estrutural', 3),
+      fetch('geoportal:pde_intervencao_pontual_melhoramento_viario', 3),
+      fetch('geoportal:pde_drenagem_acao_prioritaria_linear', 3),
+      fetch('geoportal:pde_drenagem_acao_prioritaria_pontual', 3),
+      fetch('geoportal:linha_alta_tensao', 3),
+      fetch('geoportal:torre_alta_tensao', 3),
+      fetch('geoportal:geoconvias_lei_melhoramento_vigente', 3),
+      fetch('geoportal:geoconvias_faixa_nao_edificavel', 3),
+      fetch('geoportal:solo_mole', 3),
+      fetch('geoportal:carta_geotecnica', 3),
+      fetch('geoportal:cobertura_vegetal', 3),
+      fetch('geoportal:drenagem', 3),
+      fetch('geoportal:GEOSAMPA_area_contaminada_sigac', 3),
+      fetch('geoportal:area_contaminada_reabilitada_svma', 3),
+      fetch('geoportal:GEOSAMPA_heliponto', 3),
+      fetch('geoportal:linha_metro', 3),
+      fetch('geoportal:area_influencia_metro', 3),
+      fetch('geoportal:linha_trem', 3),
+      fetch('geoportal:area_influencia_trem', 3),
+      fetch('geoportal:mancha_inundacao_5', 3),
+      fetch('geoportal:mancha_inundacao_25', 3),
+      fetch('geoportal:mancha_inundacao_100', 3),
+      fetch('geoportal:segmento_logradouro', 3),
       // ── camadas adicionadas para completar o checklist ──
-      fetch('geoportal:GEOSAMPA_area_cedida_cidadao', 3).catch(()=>null),
-      fetch('geoportal:GEOSAMPA_cadastro_area_publica_cidadao', 3).catch(()=>null),
-      fetch('geoportal:estacao_metro', 3).catch(()=>null),
-      fetch('geoportal:estacao_metro_projetada', 3).catch(()=>null),
-      fetch('geoportal:linha_metro_projetada', 3).catch(()=>null),
-      fetch('geoportal:estacao_trem', 3).catch(()=>null),
-      fetch('geoportal:estacao_trem_projetada', 3).catch(()=>null),
-      fetch('geoportal:linha_trem_projetada', 3).catch(()=>null),
-      fetch('geoportal:ferrovia_mdc', 3).catch(()=>null),
-      fetch('geoportal:GEOSAMPA_termo_compromisso_ambiental', 3).catch(()=>null),
-      fetch('geoportal:equipamento_feira_livre', 3).catch(()=>null),
-      fetch('geoportal:subsetor_operacao_urbana', 3).catch(()=>null),
+      fetch('geoportal:GEOSAMPA_area_cedida_cidadao', 3),
+      fetch('geoportal:GEOSAMPA_cadastro_area_publica_cidadao', 3),
+      fetch('geoportal:estacao_metro', 3),
+      fetch('geoportal:estacao_metro_projetada', 3),
+      fetch('geoportal:linha_metro_projetada', 3),
+      fetch('geoportal:estacao_trem', 3),
+      fetch('geoportal:estacao_trem_projetada', 3),
+      fetch('geoportal:linha_trem_projetada', 3),
+      fetch('geoportal:ferrovia_mdc', 3),
+      fetch('geoportal:GEOSAMPA_termo_compromisso_ambiental', 3),
+      fetch('geoportal:equipamento_feira_livre', 3),
+      fetch('geoportal:subsetor_operacao_urbana', 3),
     ]);
 
     const zones    = (gjZone?.features||[]).map(f=>f.properties);
@@ -2611,6 +2616,7 @@ async function _runReport(features) {
         // mostrando na interface apenas as que têm interferência.
         {
           const _hit = gj => (gj?.features||[]).length > 0;
+          if (_fetchFalhas > 0) log('warn', `Checklist: ${_fetchFalhas} consulta(s) WFS falharam — veja avisos acima.`);
           const checklistCompleto = [
             // Cadastro
             { grupo:'Cadastro / Base Territorial', titulo:'Lotes (SQL)',                           hit: _hit(gjLoteLogr) },
@@ -2677,6 +2683,7 @@ async function _runReport(features) {
           ];
 
           const comInterferencia = checklistCompleto.filter(c => c.hit);
+          log('info', `Checklist: ${comInterferencia.length} de ${checklistCompleto.length} camada(s) com interferência.`);
           const semDados = checklistCompleto.filter(c => !c.hit);
 
           if (comInterferencia.length > 0) {
@@ -3357,7 +3364,45 @@ async function _itemCamadaUnica(terrainGeom, wkt, opts) {
     const gj = await fetchWFSByGeom(layerName, wktBusca, maxFeatures);
     const feats = gj?.features || [];
     if (feats.length > 0) {
-      const linhas = feats.map(montaLinha);
+      // Classifica cada feição: interferência DIRETA (intersecta o terreno)
+      // ou apenas PROXIMIDADE (só alcançada pelo buffer de busca).
+      // Só faz sentido quando há buffer — sem buffer, tudo é direto.
+      const terFeat = terrainGeom ? { type:'Feature', geometry: terrainGeom, properties:{} } : null;
+      const _direta = (f) => {
+        if (!bufferMetros || !terFeat) return true;
+        try { return turf.booleanIntersects(terFeat, f); } catch(_) { return false; }
+      };
+      const _distM = (f) => {
+        if (!terFeat) return null;
+        try {
+          const c = turf.centroid(terFeat);
+          const g = f.geometry;
+          if (g.type === 'Point')       return turf.distance(c, f, { units:'meters' });
+          if (g.type.includes('LineString')) return turf.pointToLineDistance(c, f, { units:'meters' });
+          return turf.distance(c, turf.centroid(f), { units:'meters' });
+        } catch(_) { return null; }
+      };
+
+      const diretas   = feats.filter(f =>  _direta(f));
+      const proximas  = feats.filter(f => !_direta(f));
+      const temDireta = diretas.length > 0;
+
+      let linhas = [];
+      if (temDireta) {
+        linhas.push('◆ INCIDÊNCIA DIRETA SOBRE O TERRENO:');
+        linhas.push(...diretas.map(montaLinha));
+      }
+      if (proximas.length > 0) {
+        if (temDireta) linhas.push('');
+        linhas.push(`◇ NAS PROXIMIDADES (raio de ${bufferMetros}m — sem incidência direta):`);
+        linhas.push(...proximas.map(f => {
+          const d = _distM(f);
+          const txt = montaLinha(f);
+          return d != null ? `${txt} — a ~${Math.round(d)}m` : txt;
+        }));
+      }
+      if (linhas.length === 0) linhas = feats.map(montaLinha);
+
       let img = null;
       try {
         img = await renderCompositeMapImage({
@@ -3370,9 +3415,12 @@ async function _itemCamadaUnica(terrainGeom, wkt, opts) {
         console.error(`[PDF][${titulo}] falha ao gerar imagem:`, e);
         log('warn', `${titulo}: imagem WMS falhou — ${e.message}`);
       }
-      return { id, titulo, temInterferencia: true, resumoLinhas: linhas, imagem: img };
+      return { id, titulo, temInterferencia: true, incidenciaDireta: temDireta,
+               qtdDiretas: diretas.length, qtdProximas: proximas.length,
+               resumoLinhas: linhas, imagem: img };
     }
-    return { id, titulo, temInterferencia: false, resumoLinhas: [semTexto], imagem: null };
+    return { id, titulo, temInterferencia: false, incidenciaDireta: false,
+             resumoLinhas: [semTexto], imagem: null };
   } catch (e) {
     return { id, titulo, temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null };
   }
@@ -3412,7 +3460,28 @@ async function _itemCamadaProximidade(terrainGeom, wkt, opts) {
       } catch (_) {}
       return { f, dist };
     }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
-    const linhas = comDistancia.slice(0, 5).map(({ f, dist }) => montaLinha(f, dist));
+    // Classifica: incide diretamente no terreno ou apenas nas proximidades
+    const terFeatP = terrainGeom ? { type:'Feature', geometry: terrainGeom, properties:{} } : null;
+    const _incideP = (f) => {
+      if (!terFeatP) return false;
+      try { return turf.booleanIntersects(terFeatP, f); } catch(_) { return false; }
+    };
+    const temDiretaP = comDistancia.some(({ f }) => _incideP(f));
+
+    const linhas = [];
+    const diretasP  = comDistancia.filter(({ f }) =>  _incideP(f));
+    const proximasP = comDistancia.filter(({ f }) => !_incideP(f));
+    if (diretasP.length > 0) {
+      linhas.push('◆ INCIDÊNCIA DIRETA SOBRE O TERRENO:');
+      linhas.push(...diretasP.slice(0, 5).map(({ f, dist }) => montaLinha(f, dist)));
+    }
+    if (proximasP.length > 0) {
+      if (diretasP.length > 0) linhas.push('');
+      linhas.push(`◇ NAS PROXIMIDADES (raio de ${bufferMetros}m — sem incidência direta):`);
+      linhas.push(...proximasP.slice(0, 5).map(({ f, dist }) => montaLinha(f, dist)));
+    }
+    if (linhas.length === 0) linhas.push(...comDistancia.slice(0, 5).map(({ f, dist }) => montaLinha(f, dist)));
+
     let img = null;
     try {
       img = await renderCompositeMapImage({
@@ -3425,9 +3494,11 @@ async function _itemCamadaProximidade(terrainGeom, wkt, opts) {
       console.error(`[PDF][${titulo}] falha ao gerar imagem:`, e);
       log('warn', `${titulo}: imagem WMS falhou — ${e.message}`);
     }
-    return { id, titulo, temInterferencia: true, resumoLinhas: linhas, imagem: img };
+    return { id, titulo, temInterferencia: true, incidenciaDireta: temDiretaP,
+             qtdDiretas: diretasP.length, qtdProximas: proximasP.length,
+             resumoLinhas: linhas, imagem: img };
   } catch (e) {
-    return { id, titulo, temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null };
+    return { id, titulo, temInterferencia: false, incidenciaDireta: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null };
   }
 }
 
@@ -4746,12 +4817,21 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
       cursorY += imgHmm + 4;
     }
 
-    pdf.setFontSize(9); pdf.setTextColor(40, 40, 40);
+    pdf.setFontSize(9);
     linhas.forEach(line => {
+      // Cor por status: encontrado/incide = verde · sem incidência = vermelho
+      if (/sem incidência|dentro da tolerância|Fora d|fora d|não encontrad|Sem /i.test(line)) {
+        pdf.setTextColor(190, 40, 40);        // vermelho — sem incidência
+      } else if (/ver detalhe abaixo|INCIDE NO TERRENO|nas proximidades|INCIDÊNCIA DIRETA/i.test(line)) {
+        pdf.setTextColor(30, 130, 70);        // verde — encontrado
+      } else {
+        pdf.setTextColor(40, 40, 40);         // neutro — texto normal
+      }
       const wrapped = _safeWrap(pdf, line, contentW);
       pdf.text(wrapped, marginX, cursorY + 3.2);
       cursorY += wrapped.length * 4.6;
     });
+    pdf.setTextColor(40, 40, 40);
 
     if (item.tabela) {
       cursorY += 2;
@@ -4857,6 +4937,10 @@ function _addResumoTodasCamadas(pdf, blocos, generatedAt) {
   pdf.addPage('a4', 'portrait'); cursorY = marginTop; drawHeader();
   pdf.setFontSize(13); pdf.setFont(undefined, 'bold'); pdf.setTextColor(20, 20, 20);
   pdf.text('Resumo de Todas as Camadas Analisadas', marginX, cursorY + 5);
+  cursorY += 5;
+  pdf.setFontSize(7.5); pdf.setFont(undefined, 'normal'); pdf.setTextColor(90, 90, 100);
+  pdf.text('INCIDE NO TERRENO = sobrepõe o lote (aplicável à legislação)  ·  nas proximidades = encontrado no raio de busca, sem sobreposição', marginX, cursorY + 3.5);
+  pdf.setFontSize(9);
   pdf.setFont(undefined, 'normal'); cursorY += 9;
   pdf.setFontSize(8.5); pdf.setTextColor(110, 110, 110);
   const introWrapped = _safeWrap(pdf, 'Lista de todas as camadas do GeoSampa cruzadas com o terreno neste relatório, indicando se foi encontrada alguma restrição, incentivo ou interferência. Substitui a checagem manual de "outros itens" — os dados abaixo já refletem a análise automática feita nas páginas seguintes.', contentW);
@@ -4888,8 +4972,19 @@ function _addResumoTodasCamadas(pdf, blocos, generatedAt) {
       pdf.setFontSize(8.4); pdf.setTextColor(40, 40, 40);
       pdf.text(nomeWrapped, marginX + 2, cursorY + 3.8);
       pdf.setFontSize(8.2);
-      if (it.temInterferencia) { pdf.setTextColor(180, 90, 10); pdf.setFont(undefined, 'bold'); pdf.text('COM INTERFERÊNCIA', marginX + colNomeW + 2, cursorY + 3.8); pdf.setFont(undefined, 'normal'); }
-      else { pdf.setTextColor(60, 140, 90); pdf.text('sem incidência', marginX + colNomeW + 2, cursorY + 3.8); }
+      if (it.temInterferencia && it.incidenciaDireta !== false) {
+        // Incidência direta sobre o terreno — vale para a legislação
+        pdf.setTextColor(30, 130, 70); pdf.setFont(undefined, 'bold');
+        pdf.text('INCIDE NO TERRENO', marginX + colNomeW + 2, cursorY + 3.8);
+        pdf.setFont(undefined, 'normal');
+      } else if (it.temInterferencia) {
+        // Encontrado apenas no raio de busca — informativo, não normativo
+        pdf.setTextColor(30, 130, 70);
+        pdf.text('nas proximidades', marginX + colNomeW + 2, cursorY + 3.8);
+      } else {
+        pdf.setTextColor(190, 40, 40);
+        pdf.text('sem incidência', marginX + colNomeW + 2, cursorY + 3.8);
+      }
       cursorY += thisRowH;
     });
     cursorY += 4;
@@ -4953,13 +5048,13 @@ window.exportReportPDF = async function() {
     const zonesInReport = Array.from(allZoneBadges).map(b => b.textContent.replace('🏙','').trim()).filter(Boolean);
     const filename = `KV_Relatorio_Urbanistico_${zonesInReport.join('-')||params._zone||'SP'}_${new Date().toISOString().slice(0,10)}.pdf`;
 
-    if (bloco1.length) { const resumoCard = { titulo: 'Resumo Complementar — Cadastro e Base Territorial', resumoLinhas: bloco1.map(it => it.id === 'comparacao_areas' ? `${it.titulo}: ${it.temInterferencia ? 'divergência acima de 5% — ver detalhe abaixo' : 'dentro da tolerância — ver detalhe abaixo'}` : `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCard, ...bloco1.filter(it => it.temInterferencia || it.id === 'comparacao_areas')], now); }
-    if (blocoViario.length) { const resumoCardViario = { titulo: 'Resumo Complementar — Sistema Viário', resumoLinhas: blocoViario.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardViario, ...blocoViario.filter(it => it.temInterferencia)], now); }
-    if (bloco2.length) { const resumoCard2 = { titulo: 'Resumo Complementar — Legislação Urbana e Potencial Construtivo', resumoLinhas: bloco2.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCard2, ...bloco2.filter(it => it.temInterferencia)], now); }
-    if (bloco3.length) { const resumoCard3 = { titulo: 'Resumo Complementar — Patrimônio Histórico', resumoLinhas: bloco3.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCard3, ...bloco3.filter(it => it.temInterferencia)], now); }
-    if (blocoTransporte.length) { const resumoCardTransporte = { titulo: 'Resumo Complementar — Transporte (Metrô e Trem)', resumoLinhas: blocoTransporte.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardTransporte, ...blocoTransporte.filter(it => it.temInterferencia)], now); }
-    if (blocoAmbiental.length) { const resumoCardAmbiental = { titulo: 'Resumo Complementar — Licenciamento Ambiental', resumoLinhas: blocoAmbiental.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardAmbiental, ...blocoAmbiental.filter(it => it.temInterferencia)], now); }
-    if (blocoInfra.length) { const resumoCardInfra = { titulo: 'Resumo Complementar — Infraestrutura, Meio Físico, Equipamentos e Verde', resumoLinhas: blocoInfra.map(it => `${it.titulo}: ${it.temInterferencia ? 'encontrado — ver detalhe abaixo' : 'sem incidência'}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardInfra, ...blocoInfra.filter(it => it.temInterferencia)], now); }
+    if (bloco1.length) { const resumoCard = { titulo: 'Resumo Complementar — Cadastro e Base Territorial', resumoLinhas: bloco1.map(it => it.id === 'comparacao_areas' ? `${it.titulo}: ${it.temInterferencia ? 'divergência acima de 5% — ver detalhe abaixo' : 'dentro da tolerância — ver detalhe abaixo'}` : `${it.titulo}: ${!it.temInterferencia ? 'sem incidência' : (it.incidenciaDireta !== false ? 'INCIDE NO TERRENO — ver detalhe abaixo' : 'nas proximidades — ver detalhe abaixo')}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCard, ...bloco1.filter(it => it.temInterferencia || it.id === 'comparacao_areas')], now); }
+    if (blocoViario.length) { const resumoCardViario = { titulo: 'Resumo Complementar — Sistema Viário', resumoLinhas: blocoViario.map(it => `${it.titulo}: ${!it.temInterferencia ? 'sem incidência' : (it.incidenciaDireta !== false ? 'INCIDE NO TERRENO — ver detalhe abaixo' : 'nas proximidades — ver detalhe abaixo')}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardViario, ...blocoViario.filter(it => it.temInterferencia)], now); }
+    if (bloco2.length) { const resumoCard2 = { titulo: 'Resumo Complementar — Legislação Urbana e Potencial Construtivo', resumoLinhas: bloco2.map(it => `${it.titulo}: ${!it.temInterferencia ? 'sem incidência' : (it.incidenciaDireta !== false ? 'INCIDE NO TERRENO — ver detalhe abaixo' : 'nas proximidades — ver detalhe abaixo')}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCard2, ...bloco2.filter(it => it.temInterferencia)], now); }
+    if (bloco3.length) { const resumoCard3 = { titulo: 'Resumo Complementar — Patrimônio Histórico', resumoLinhas: bloco3.map(it => `${it.titulo}: ${!it.temInterferencia ? 'sem incidência' : (it.incidenciaDireta !== false ? 'INCIDE NO TERRENO — ver detalhe abaixo' : 'nas proximidades — ver detalhe abaixo')}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCard3, ...bloco3.filter(it => it.temInterferencia)], now); }
+    if (blocoTransporte.length) { const resumoCardTransporte = { titulo: 'Resumo Complementar — Transporte (Metrô e Trem)', resumoLinhas: blocoTransporte.map(it => `${it.titulo}: ${!it.temInterferencia ? 'sem incidência' : (it.incidenciaDireta !== false ? 'INCIDE NO TERRENO — ver detalhe abaixo' : 'nas proximidades — ver detalhe abaixo')}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardTransporte, ...blocoTransporte.filter(it => it.temInterferencia)], now); }
+    if (blocoAmbiental.length) { const resumoCardAmbiental = { titulo: 'Resumo Complementar — Licenciamento Ambiental', resumoLinhas: blocoAmbiental.map(it => `${it.titulo}: ${!it.temInterferencia ? 'sem incidência' : (it.incidenciaDireta !== false ? 'INCIDE NO TERRENO — ver detalhe abaixo' : 'nas proximidades — ver detalhe abaixo')}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardAmbiental, ...blocoAmbiental.filter(it => it.temInterferencia)], now); }
+    if (blocoInfra.length) { const resumoCardInfra = { titulo: 'Resumo Complementar — Infraestrutura, Meio Físico, Equipamentos e Verde', resumoLinhas: blocoInfra.map(it => `${it.titulo}: ${!it.temInterferencia ? 'sem incidência' : (it.incidenciaDireta !== false ? 'INCIDE NO TERRENO — ver detalhe abaixo' : 'nas proximidades — ver detalhe abaixo')}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardInfra, ...blocoInfra.filter(it => it.temInterferencia)], now); }
     if (blocoGeometria.length) { const resumoCardGeometria = { titulo: 'Resumo Complementar — Regras de Geometria', resumoLinhas: blocoGeometria.map(it => `${it.titulo}: ${it.temInterferencia ? 'ver detalhe abaixo' : 'dentro do esperado / sem alerta'}`), imagem: null }; pdf.addPage('a4', 'portrait'); _addBloco1CardsToPDF(pdf, [resumoCardGeometria, ...blocoGeometria.filter(it => it.temInterferencia)], now); }
 
     pdf.save(filename);
@@ -5575,7 +5670,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V117 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V121 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
