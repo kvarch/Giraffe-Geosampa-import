@@ -4413,10 +4413,13 @@ async function analisarBlocoInfraestrutura(terrainGeom, wkt) {
         ['Mista',                                                       '#BE584C'],
       ];
       const norm = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
-      const presentes = new Set(_itemCob.resumoLinhas
-        .map(l => norm(String(l).split(' — ')[0]))
-        .filter(Boolean));
-      const usadas = legendaOficial.filter(([cat]) => presentes.has(norm(cat)));
+      // Usa startsWith para casar parcialmente: o montaLinha trunca o nome
+      // da categoria (tx_descricao_categoria_subcategoria pode vir abreviado).
+      const linhasNorm = _itemCob.resumoLinhas.map(l => norm(String(l).split(' — ')[0]));
+      const usadas = legendaOficial.filter(([cat]) => {
+        const nc = norm(cat);
+        return linhasNorm.some(ln => ln && (ln === nc || nc.startsWith(ln) || ln.startsWith(nc)));
+      });
       if (usadas.length > 0) {
         _itemCob.resumoLinhas.push('');
         _itemCob.resumoLinhas.push('Legenda de cores (GeoSampa · Mapeamento da Cobertura Vegetal):');
@@ -4744,56 +4747,22 @@ function _pdfSafeChars(s) {
 }
 
 // ── E-mail do usuário logado no Giraffe ──────────────────────────────
-// A chave exata no giraffeState varia por versão do SDK, então testamos
-// várias e, como último recurso, decodificamos o JWT de claims.
+// Campo confirmado empiricamente via JWT: 'user_email'
+// JWT decodificado: { user_id, user_name, user_email, workspaces, exp }
 let _kvUserEmailCache = null;
 async function _getUserEmail() {
   if (_kvUserEmailCache !== null) return _kvUserEmailCache;
-
-  const pick = o => {
-    if (!o) return '';
-    if (typeof o === 'string' && o.includes('@')) return o;
-    return o.email || o.userEmail || o.user_email || o.username || o.preferred_username
-        || o.user?.email || o.profile?.email || o.claims?.email || '';
-  };
-
-  // 1) Chaves conhecidas do giraffeState
-  const chaves = ['giraffe_user','user','currentUser','userInfo','me','profile','account'];
-  for (const k of chaves) {
-    try {
-      const v = giraffeState.get(k);
-      const e = pick(v);
-      if (e) { console.log(`[KV] e-mail via giraffeState('${k}')`, v); _kvUserEmailCache = e; return e; }
-    } catch(_) {}
-  }
-
-  // 2) Varre o state inteiro procurando algo que pareça e-mail
-  try {
-    const all = (typeof giraffeState.getAll === 'function') ? giraffeState.getAll() : null;
-    if (all && typeof all === 'object') {
-      console.log('[KV] chaves disponíveis no giraffeState:', Object.keys(all));
-      for (const [k, v] of Object.entries(all)) {
-        const e = pick(v);
-        if (e) { console.log(`[KV] e-mail via giraffeState.getAll().${k}`, v); _kvUserEmailCache = e; return e; }
-      }
-    }
-  } catch(_) {}
-
-  // 3) JWT de claims — payload base64 traz o e-mail
   try {
     const jwt = await rpc.invoke('getUserClaimsJwt', []);
     const token = typeof jwt === 'string' ? jwt : (jwt?.token || jwt?.jwt || '');
     const parte = String(token).split('.')[1];
     if (parte) {
-      const json = JSON.parse(decodeURIComponent(escape(atob(parte.replace(/-/g,'+').replace(/_/g,'/')))));
-      console.log('[KV] claims JWT:', json);
-      const e = pick(json);
-      if (e) { _kvUserEmailCache = e; return e; }
+      const json = JSON.parse(atob(parte.replace(/-/g,'+').replace(/_/g,'/')));
+      // user_email é o campo confirmado; user_name como fallback
+      _kvUserEmailCache = json.user_email || json.email || json.user_name || '';
     }
-  } catch(err) { console.warn('[KV] getUserClaimsJwt falhou:', err); }
-
-  _kvUserEmailCache = '';
-  return '';
+  } catch(e) { console.warn('[KV] _getUserEmail:', e); _kvUserEmailCache = ''; }
+  return _kvUserEmailCache;
 }
 
 // Logo KV (assinatura POS, fundo claro) para o cabeçalho do PDF.
@@ -5001,8 +4970,14 @@ function _renderVisualReportAsText(pdf, contentEl, generatedAt) {
 // se o card seguinte couber no espaço restante da página atual, ele
 // entra na mesma folha — senão, quebra para uma nova página A4.
 function _addBloco1CardsToPDF(pdf, items, generatedAt) {
-  const pageW = 210, pageH = 297, marginX = 12, marginBottom = 14;
+  const pageW = 210, pageH = 297, marginX = 12, marginTop = 14, marginBottom = 14;
   const contentW = pageW - marginX * 2;
+  function drawHeader() {
+    pdf.setFillColor(0,0,0); pdf.rect(0,0,pageW,10,'F');
+    _drawKvLogo(pdf, marginX, 1.6, 7);
+    pdf.setFontSize(8); pdf.setTextColor(140,140,140); pdf.setFont(undefined,'normal');
+    pdf.text(generatedAt, pageW - marginX, 8, { align: 'right' });
+  }
   let cursorY = 16;
   let pageIndex = 0;
 
@@ -5095,6 +5070,8 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
       // quadradinho da cor real antes do texto (usado na Cobertura Vegetal)
       const mLeg = /^\s*\[#([0-9A-Fa-f]{6})\]\s*(.+)$/.exec(String(line));
       if (mLeg) {
+        // Quebra de página antes do swatch se não couber mais 6mm
+        if (cursorY + 6 > pageH - marginBottom) { pdf.addPage('a4','portrait'); drawHeader(); cursorY = marginTop; }
         const hex = mLeg[1];
         const r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
         pdf.setFillColor(r,g,b);
@@ -5108,15 +5085,20 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
       }
       // Cor por status: encontrado/incide = verde · sem incidência = vermelho
       if (/sem incidência|dentro da tolerância|Fora d|fora d|não encontrad|Sem /i.test(line)) {
-        pdf.setTextColor(190, 40, 40);        // vermelho — sem incidência
+        pdf.setTextColor(190, 40, 40);
       } else if (/ver detalhe abaixo|INCIDE NO TERRENO|nas proximidades|INCIDÊNCIA DIRETA/i.test(line)) {
-        pdf.setTextColor(30, 130, 70);        // verde — encontrado
+        pdf.setTextColor(30, 130, 70);
       } else {
-        pdf.setTextColor(40, 40, 40);         // neutro — texto normal
+        pdf.setTextColor(40, 40, 40);
       }
       const wrapped = _safeWrap(pdf, line, contentW);
+      // Quebra de página se o bloco de linhas não couber
+      const linhasNecessarias = wrapped.length;
+      if (cursorY + linhasNecessarias * 4.6 + 3 > pageH - marginBottom) {
+        pdf.addPage('a4', 'portrait'); drawHeader(); cursorY = marginTop;
+      }
       pdf.text(wrapped, marginX, cursorY + 3.2);
-      cursorY += wrapped.length * 4.6;
+      cursorY += linhasNecessarias * 4.6;
     });
     pdf.setTextColor(40, 40, 40);
 
@@ -5981,7 +5963,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V136 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V138 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
