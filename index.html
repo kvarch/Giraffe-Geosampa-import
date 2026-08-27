@@ -2110,13 +2110,25 @@ async function _runReport(features) {
   setReportStatus('loading', `Consultando GeoSampa com ${filterMode === 'intersects' ? 'polígono exato' : 'BBOX'}...`);
   log('info', `Relatório: filtro ${filterMode.toUpperCase()} — ${wkt.slice(0,60)}...`);
 
-  // Relatório visual: interseção com o polígono EXATO do terreno, sem buffer.
-  // (o relatório PDF usa buffers próprios por camada — não alterar.)
+  // fetch(id, maxFeatures, bufferM) — espelha os raios usados no relatório PDF
+  // para que o checklist visual mostre as mesmas camadas do "Resumo de Todas
+  // as Camadas Analisadas", distinguindo incidência direta de proximidade.
+  const _wktCache = {};
+  const _wktBuf = (m) => {
+    if (!m) return wkt;
+    if (_wktCache[m]) return _wktCache[m];
+    try {
+      const g = window._kvTerrainGeomForReport || currentGeometry;
+      if (g) { const w = geojsonToWKT(turfBuffer(g, m)); if (w) { _wktCache[m] = w; return w; } }
+    } catch(_) {}
+    return wkt;
+  };
+
   let _fetchFalhas = 0;
   const fetch = filterMode === 'intersects'
-    ? (id, mf) => fetchWFSByGeom(id, wkt, mf)
+    ? (id, mf, bufM) => fetchWFSByGeom(id, _wktBuf(bufM), mf)
         .catch(e => { _fetchFalhas++; log('warn', `WFS ${id}: ${e.message}`); return null; })
-    : (id, mf) => fetchWFS(id, expandBBOX(currentBBOX, 5), mf)
+    : (id, mf, bufM) => fetchWFS(id, expandBBOX(currentBBOX, bufM || 5), mf)
         .catch(e => { _fetchFalhas++; log('warn', `WFS ${id}: ${e.message}`); return null; });
 
   try {
@@ -2134,62 +2146,62 @@ async function _runReport(features) {
       fetch('geoportal:zoneamento_2016_map1', 10),
       fetch('geoportal:operacao_urbana', 5),
       fetch('geoportal:eixo_ativado_decreto', 5),
-      fetch('geoportal:patrimonio_cultural_bem_tombado', 5),
-      fetch('geoportal:manancial_guarapiranga', 2),
-      fetch('geoportal:manancial_billings', 2),
-      fetch('geoportal:area_risco_geologico', 5),
-      fetch('geoportal:area_inundavel', 5),
-      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONPRESP', 5),
+      fetch('geoportal:patrimonio_cultural_bem_tombado', 5, 300),
+      fetch('geoportal:manancial_guarapiranga', 2, 300),
+      fetch('geoportal:manancial_billings', 2, 300),
+      fetch('geoportal:area_risco_geologico', 5, 200),
+      fetch('geoportal:area_inundavel', 5, 100),
+      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONPRESP', 5, 300),
       // novos — checklist completo
-      fetch('geoportal:patrimonio_cultural_acervo_tombado', 3),
-      fetch('geoportal:patrimonio_cultural_bairro_ambiental', 3),
-      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONDEPHAAT', 3),
-      fetch('geoportal:patrimonio_cultural_area_envoltoria_IPHAN', 3),
-      fetch('geoportal:cit_cidadao', 3),
-      fetch('geoportal:perimetro_zepec', 3),
+      fetch('geoportal:patrimonio_cultural_acervo_tombado', 3, 300),
+      fetch('geoportal:patrimonio_cultural_bairro_ambiental', 3, 300),
+      fetch('geoportal:patrimonio_cultural_area_envoltoria_CONDEPHAAT', 3, 300),
+      fetch('geoportal:patrimonio_cultural_area_envoltoria_IPHAN', 3, 300),
+      fetch('geoportal:cit_cidadao', 3, 300),
+      fetch('geoportal:perimetro_zepec', 3, 200),
       fetch('geoportal:pde_macroarea_lei_18209', 3),
       fetch('geoportal:pde2014_v_mcrz_01_map', 3),
-      fetch('geoportal:aiu_perimetro_pinheiros', 3),
-      fetch('geoportal:enquadramento_vila', 3),
-      fetch('geoportal:deliberacao_ctlu', 3),
-      fetch('geoportal:planta_dup_dis_pd', 3),
+      fetch('geoportal:aiu_perimetro_pinheiros', 3, 200),
+      fetch('geoportal:enquadramento_vila', 3, 100),
+      fetch('geoportal:deliberacao_ctlu', 3, 200),
+      fetch('geoportal:planta_dup_dis_pd', 3, 200),
       fetch('geoportal:edificacao', 3),
-      fetch('geoportal:pde_viario_estrutural', 3),
-      fetch('geoportal:pde_intervencao_pontual_melhoramento_viario', 3),
-      fetch('geoportal:pde_drenagem_acao_prioritaria_linear', 3),
-      fetch('geoportal:pde_drenagem_acao_prioritaria_pontual', 3),
-      fetch('geoportal:linha_alta_tensao', 3),
-      fetch('geoportal:torre_alta_tensao', 3),
-      fetch('geoportal:geoconvias_lei_melhoramento_vigente', 3),
-      fetch('geoportal:geoconvias_faixa_nao_edificavel', 3),
-      fetch('geoportal:solo_mole', 3),
-      fetch('geoportal:carta_geotecnica', 3),
-      fetch('geoportal:cobertura_vegetal', 3),
-      fetch('geoportal:drenagem', 3),
-      fetch('geoportal:GEOSAMPA_area_contaminada_sigac', 3),
-      fetch('geoportal:area_contaminada_reabilitada_svma', 3),
-      fetch('geoportal:GEOSAMPA_heliponto', 3),
-      fetch('geoportal:linha_metro', 3),
-      fetch('geoportal:area_influencia_metro', 3),
-      fetch('geoportal:linha_trem', 3),
-      fetch('geoportal:area_influencia_trem', 3),
-      fetch('geoportal:mancha_inundacao_5', 3),
-      fetch('geoportal:mancha_inundacao_25', 3),
-      fetch('geoportal:mancha_inundacao_100', 3),
+      fetch('geoportal:pde_viario_estrutural', 3, 150),
+      fetch('geoportal:pde_intervencao_pontual_melhoramento_viario', 3, 150),
+      fetch('geoportal:pde_drenagem_acao_prioritaria_linear', 3, 150),
+      fetch('geoportal:pde_drenagem_acao_prioritaria_pontual', 3, 150),
+      fetch('geoportal:linha_alta_tensao', 3, 100),
+      fetch('geoportal:torre_alta_tensao', 3, 100),
+      fetch('geoportal:geoconvias_lei_melhoramento_vigente', 3, 150),
+      fetch('geoportal:geoconvias_faixa_nao_edificavel', 3, 100),
+      fetch('geoportal:solo_mole', 3, 100),
+      fetch('geoportal:carta_geotecnica', 3, 100),
+      fetch('geoportal:cobertura_vegetal', 3, 150),
+      fetch('geoportal:drenagem', 3, 50),
+      fetch('geoportal:GEOSAMPA_area_contaminada_sigac', 3, 300),
+      fetch('geoportal:area_contaminada_reabilitada_svma', 3, 300),
+      fetch('geoportal:GEOSAMPA_heliponto', 3, 500),
+      fetch('geoportal:linha_metro', 3, 600),
+      fetch('geoportal:area_influencia_metro', 3, 600),
+      fetch('geoportal:linha_trem', 3, 600),
+      fetch('geoportal:area_influencia_trem', 3, 600),
+      fetch('geoportal:mancha_inundacao_5', 3, 100),
+      fetch('geoportal:mancha_inundacao_25', 3, 100),
+      fetch('geoportal:mancha_inundacao_100', 3, 100),
       fetch('geoportal:segmento_logradouro', 3),
       // ── camadas adicionadas para completar o checklist ──
-      fetch('geoportal:GEOSAMPA_area_cedida_cidadao', 3),
-      fetch('geoportal:GEOSAMPA_cadastro_area_publica_cidadao', 3),
-      fetch('geoportal:estacao_metro', 3),
-      fetch('geoportal:estacao_metro_projetada', 3),
-      fetch('geoportal:linha_metro_projetada', 3),
-      fetch('geoportal:estacao_trem', 3),
-      fetch('geoportal:estacao_trem_projetada', 3),
-      fetch('geoportal:linha_trem_projetada', 3),
-      fetch('geoportal:ferrovia_mdc', 3),
-      fetch('geoportal:GEOSAMPA_termo_compromisso_ambiental', 3),
-      fetch('geoportal:equipamento_feira_livre', 3),
-      fetch('geoportal:subsetor_operacao_urbana', 3),
+      fetch('geoportal:GEOSAMPA_area_cedida_cidadao', 3, 50),
+      fetch('geoportal:GEOSAMPA_cadastro_area_publica_cidadao', 3, 50),
+      fetch('geoportal:estacao_metro', 3, 600),
+      fetch('geoportal:estacao_metro_projetada', 3, 600),
+      fetch('geoportal:linha_metro_projetada', 3, 600),
+      fetch('geoportal:estacao_trem', 3, 600),
+      fetch('geoportal:estacao_trem_projetada', 3, 600),
+      fetch('geoportal:linha_trem_projetada', 3, 600),
+      fetch('geoportal:ferrovia_mdc', 3, 300),
+      fetch('geoportal:GEOSAMPA_termo_compromisso_ambiental', 3, 200),
+      fetch('geoportal:equipamento_feira_livre', 3, 300),
+      fetch('geoportal:subsetor_operacao_urbana', 3, 100),
     ]);
 
     const zones    = (gjZone?.features||[]).map(f=>f.properties);
@@ -2615,7 +2627,19 @@ async function _runReport(features) {
         // Monta lista com TODAS as camadas analisadas pelo relatório,
         // mostrando na interface apenas as que têm interferência.
         {
-          const _hit = gj => (gj?.features||[]).length > 0;
+          // _hit: retorna null (nada), 'direta' (intersecta o terreno) ou 'proxima'
+          const _terFeatChk = (window._kvTerrainGeomForReport || currentGeometry)
+            ? { type:'Feature', geometry: (window._kvTerrainGeomForReport || currentGeometry), properties:{} }
+            : null;
+          const _hit = gj => {
+            const fs = gj?.features || [];
+            if (fs.length === 0) return null;
+            if (!_terFeatChk) return 'direta';
+            for (const f of fs) {
+              try { if (turf.booleanIntersects(_terFeatChk, f)) return 'direta'; } catch(_) {}
+            }
+            return 'proxima';
+          };
           if (_fetchFalhas > 0) log('warn', `Checklist: ${_fetchFalhas} consulta(s) WFS falharam — veja avisos acima.`);
           const checklistCompleto = [
             // Cadastro
@@ -2682,27 +2706,50 @@ async function _runReport(features) {
             // Gabarito COMAR não tem camada GeoSampa — mantém como verificação manual
           ];
 
-          const comInterferencia = checklistCompleto.filter(c => c.hit);
+          // Camadas que não devem aparecer no checklist visual (já detalhadas
+          // em seções próprias do relatório ou sem valor de alerta)
+          const _excluir = [
+            'Setor e Quadra Fiscal','Lotes (SQL)','Comparação de Áreas',
+            'Logradouro Confrontante','Largura das Vias','Perímetro das Zonas',
+            'Macrozona','Macroárea','Verticalização da Quadra',
+            'Inclinação do Terreno','Isenção de Recuo Frontal',
+          ];
+          const _excluido = t => _excluir.some(e =>
+            (t||'').toLowerCase().includes(e.toLowerCase()));
+
+          const comInterferencia = checklistCompleto
+            .filter(c => c.hit && !_excluido(c.titulo));
           log('info', `Checklist: ${comInterferencia.length} de ${checklistCompleto.length} camada(s) com interferência.`);
           const semDados = checklistCompleto.filter(c => !c.hit);
 
           if (comInterferencia.length > 0) {
             // Agrupa por grupo
+            // Ordena: incidência direta primeiro, depois proximidade
             const grupos = {};
-            comInterferencia.forEach(c => { if (!grupos[c.grupo]) grupos[c.grupo]=[]; grupos[c.grupo].push(c.titulo); });
+            comInterferencia.forEach(c => { if (!grupos[c.grupo]) grupos[c.grupo]=[]; grupos[c.grupo].push(c); });
+            const nDiretas  = comInterferencia.filter(c => c.hit === 'direta').length;
+            const nProximas = comInterferencia.filter(c => c.hit === 'proxima').length;
             let rows = '';
             for (const [grp, itens] of Object.entries(grupos)) {
-              itens.forEach((titulo, i) => {
+              itens.sort((a,b) => (a.hit === 'direta' ? 0 : 1) - (b.hit === 'direta' ? 0 : 1));
+              itens.forEach((c, i) => {
+                const pt = i===0 ? '10px' : '4px';
+                const badge = c.hit === 'direta'
+                  ? '<span class="report-val-warn">INCIDE NO TERRENO</span>'
+                  : '<span style="color:var(--muted);font-size:10px">nas proximidades</span>';
                 rows += `<tr>
-                  <td style="color:var(--muted);font-size:9px;padding-top:${i===0?'10px':'4px'}">${i===0?grp:''}</td>
-                  <td style="padding-top:${i===0?'10px':'4px'}">${titulo}</td>
-                  <td style="padding-top:${i===0?'10px':'4px'}"><span class="report-val-warn">COM INTERFERÊNCIA</span></td>
+                  <td style="color:var(--muted);font-size:9px;padding-top:${pt}">${i===0?grp:''}</td>
+                  <td style="padding-top:${pt}">${c.titulo}</td>
+                  <td style="padding-top:${pt}">${badge}</td>
                 </tr>`;
               });
             }
             html += `<div class="report-section">
               <div class="report-section-title">Camadas com Interferência — Verificar no relatório PDF</div>
-              <div class="report-note" style="border-top:none;padding-bottom:0">Camadas com dados encontrados na geometria do terreno. Detalhes completos no relatório PDF.</div>
+              <div class="report-note" style="border-top:none;padding-bottom:0">
+                <strong>${nDiretas}</strong> camada(s) incidindo diretamente sobre o terreno${nProximas>0?` · <strong>${nProximas}</strong> nas proximidades`:''}.<br>
+                Detalhes completos no relatório PDF.
+              </div>
               <table class="report-table" style="margin-top:4px">${rows}</table>
             </div>`;
           }
@@ -3655,45 +3702,8 @@ async function analisarBloco1Cadastral(terrainGeom, wkt) {
     results.push({ id: 'cap', titulo: 'Cadastro de Área Pública (CAP)', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
   }
 
-  // 5) Logradouro confrontante — buffer de 8m (a via raramente toca o
-  // polígono do lote diretamente) + imagem WMS nativa
-  try {
-    let logrWkt = wkt;
-    if (terrainGeom) {
-      const buffered = turfBuffer(terrainGeom, 8);
-      logrWkt = geojsonToWKT(buffered) || wkt;
-    }
-    const gj = await fetchWFSByGeom('geoportal:segmento_logradouro', logrWkt, 20);
-    const feats = gj?.features || [];
-    if (feats.length > 0) {
-      const vistos = new Set();
-      const linhas = [];
-      feats.forEach(f => {
-        const p = f.properties || {};
-        const key = p.codlog || p.nm_logradouro;
-        if (vistos.has(key)) return;
-        vistos.add(key);
-        linhas.push(`${p.nm_logradouro || '—'} — Codlog: ${p.codlog || '—'}`);
-      });
-      let img = null;
-      try {
-        img = await renderCompositeMapImage({
-          terrainGeom,
-          layers: ['MapaBase_Topografico', 'segmento_logradouro'],
-          styles: [null, 'line.Logradouro.CamadaLabel'],
-          marginMeters: 100, widthPx: 1000, heightPx: 750,
-        });
-      } catch (e) {
-        console.error('[PDF][Logradouro] falha ao gerar imagem:', e);
-        log('warn', `Logradouro: imagem WMS falhou — ${e.message}`);
-      }
-      results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: true, resumoLinhas: linhas, imagem: img });
-    } else {
-      results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: false, resumoLinhas: ['Nenhum logradouro confrontante identificado nesse buffer.'], imagem: null });
-    }
-  } catch (e) {
-    results.push({ id: 'logradouro', titulo: 'Cadastro — Logradouro Confrontante', temInterferencia: false, resumoLinhas: [`Erro na consulta: ${e.message}`], imagem: null });
-  }
+  // 5) Logradouro confrontante — removido daqui (duplicava o item
+  // "Sistema Viário — Logradouro Confrontante" gerado em analisarBlocoViario)
 
   return results;
 }
@@ -5670,7 +5680,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V121 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V123 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
