@@ -2827,12 +2827,8 @@ async function _runReport(features) {
       </div>`;
     }
 
-    // E-mail do usuário logado no Giraffe, para rastreabilidade do relatório
-    let _userEmailRel = '';
-    try {
-      const _u = giraffeState.get('giraffe_user');
-      _userEmailRel = _u?.email || _u?.username || _u?.name || '';
-    } catch(_) {}
+    // E-mail do usuário logado, para rastreabilidade do relatório
+    const _userEmailRel = await _getUserEmail();
 
     html += `<div class="report-footer">
       Quadro 3 — LPUOS Lei 16.402/16 · Lei 18.081/24 · Lei 18.177/24 · Alinhado ao checklist de Análise Legal KV<br>
@@ -4105,17 +4101,17 @@ async function analisarBloco2Legislacao(terrainGeom, wkt) {
   }));
 
 
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'eixo_ativado', titulo: 'Legislação — Eixo Ativado (Decreto)', layerName: 'geoportal:eixo_ativado_decreto', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Eixo de estruturação ativado por decreto — ${p.nm_eixo || p.cd_eixo || '—'}`; }, semTexto: 'Fora de eixo ativado por decreto.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'eixo_aiu', titulo: 'Legislação — Eixo Estratégico de Transformação (AIU)', layerName: 'geoportal:eixo_estrategico_transformacao_aiu', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Eixo estratégico de transformação — ${p.nm_aiu || p.nm_eixo || '—'}`; }, semTexto: 'Fora de eixo estratégico de transformação (AIU).' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'imovel_notificado', titulo: 'Legislação — Imóvel Notificado (PEUC)', layerName: 'geoportal:imovel_notificado', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Imóvel notificado — ${p.tx_situacao || p.cd_situacao || 'PEUC'} (processo: ${p.cd_processo || '—'})`; }, semTexto: 'Sem notificação PEUC incidente.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'outorga_onerosa', titulo: 'Legislação — Outorga Onerosa', layerName: 'geoportal:outorga_onerosa', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Outorga onerosa — ${p.tx_descricao || p.nm_area || '—'}`; }, semTexto: 'Sem registro de outorga onerosa incidente.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'cota_solidariedade', titulo: 'Legislação — Cota de Solidariedade', layerName: 'geoportal:cota_solidariedade', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Cota de solidariedade — ${p.tx_descricao || p.cd_processo || '—'}`; }, semTexto: 'Sem incidência de cota de solidariedade registrada.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'zeis_pde', titulo: 'Legislação — ZEIS (PDE Mapa 4)', layerName: 'geoportal:pde2014_v_zeis_04_map', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `ZEIS: ${p.cd_zeis || p.nm_zeis || '—'}`; }, semTexto: 'Terreno fora de ZEIS (Mapa 4 do PDE).' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'zeis_pde_a', titulo: 'Legislação — ZEIS (PDE Mapa 4A)', layerName: 'geoportal:pde2014_v_zeis_04a_map', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `ZEIS (4A): ${p.cd_zeis || p.nm_zeis || '—'}`; }, semTexto: 'Terreno fora de ZEIS (Mapa 4A do PDE).' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'quadro2', titulo: 'Legislação — Lote com Incidência do Quadro 2', layerName: 'geoportal:lote_incidencia_quadro_2', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Lote com incidência do Quadro 2 — ${p.cd_sql || p.tx_descricao || '—'}`; }, semTexto: 'Lote sem incidência do Quadro 2.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'diretriz', titulo: 'Legislação — Diretriz Urbanística', layerName: 'geoportal:diretriz', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Diretriz: ${p.tx_diretriz || p.nm_diretriz || p.cd_processo || '—'}`; }, semTexto: 'Sem diretriz urbanística incidente.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'planta_expropriatoria', titulo: 'Legislação — Planta Expropriatória', layerName: 'geoportal:planta_expropriatoria_pd', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Planta expropriatória — decreto ${p.nr_decreto || p.cd_processo || '—'}`; }, semTexto: 'Sem planta expropriatória incidente.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'licenca_obra', titulo: 'Legislação — Licença de Obra', layerName: 'geoportal:GEOSAMPA_licenca_obra', maxFeatures: 10, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Licença de obra — ${p.tx_tipo_licenca || p.cd_processo || '—'} (${p.dt_emissao || '—'})`; }, semTexto: 'Sem licença de obra registrada no entorno imediato.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'eixo_ativado', titulo: 'Legislação — Eixo Ativado (Decreto)', layerName: 'geoportal:eixo_ativado_decreto', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_eixo_ativado_decreto || 'Eixo ativado'} — Decreto ${p.tx_decreto || '—'}`; }, semTexto: 'Fora de eixo ativado por decreto.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'eixo_aiu', titulo: 'Legislação — Eixo Estratégico de Transformação (AIU)', layerName: 'geoportal:eixo_estrategico_transformacao_aiu', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.tx_tipo_eixo || 'Eixo estratégico'}: ${p.nm_logradouro_eixo || '—'} (${p.nm_endereco_inicio || '—'} até ${p.nm_endereco_fim || '—'}) — ${p.nm_lei || p.cd_numero_lei || '—'}`; }, semTexto: 'Fora de eixo estratégico de transformação (AIU).' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'imovel_notificado', titulo: 'Legislação — Imóvel Notificado (PEUC)', layerName: 'geoportal:imovel_notificado', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `SQL ${p.cd_sql_imovel_notificado || '—'} — ${p.dc_tipologia || '—'} · Situação: ${p.dc_situacao_imovel_notificado || '—'} · IPTU progressivo: ${p.in_iptu_progressivo || '—'}`; }, semTexto: 'Sem notificação PEUC incidente.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'outorga_onerosa', titulo: 'Legislação — Outorga Onerosa', layerName: 'geoportal:outorga_onerosa', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_endereco || '—'} — CA ${p.cd_coeficiente_utilizacao || '—'} · área excedente ${p.qt_area_excedente ? Math.round(p.qt_area_excedente).toLocaleString('pt-BR') : '—'}m² · ${p.tx_situacao || '—'} (alvará ${p.cd_numero_alvara || '—'})`; }, semTexto: 'Sem registro de outorga onerosa incidente.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'cota_solidariedade', titulo: 'Legislação — Cota de Solidariedade', layerName: 'geoportal:cota_solidariedade', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.tp_logradouro || ''} ${p.nm_titulo_logradouro || ''} ${p.nm_logradouro || ''}, ${p.nr_endereco || '—'} — ${p.tp_atendimento_cota || '—'} · ${p.tp_modalidade_cota || '—'} · ${p.vl_cota_solidaridade || '—'}`; }, semTexto: 'Sem incidência de cota de solidariedade registrada.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'zeis_pde', titulo: 'Legislação — ZEIS (PDE Mapa 4)', layerName: 'geoportal:pde2014_v_zeis_04_map', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.tx_zoneamento_perimetro || p.cd_zoneamento_perimetro || '—'}`; }, semTexto: 'Terreno fora de ZEIS (Mapa 4 do PDE).' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'zeis_pde_a', titulo: 'Legislação — ZEIS (PDE Mapa 4A)', layerName: 'geoportal:pde2014_v_zeis_04a_map', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.tx_zoneamento_perimetro || p.cd_zoneamento_perimetro || '—'}`; }, semTexto: 'Terreno fora de ZEIS (Mapa 4A do PDE).' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'quadro2', titulo: 'Legislação — Lote com Incidência do Quadro 2', layerName: 'geoportal:lote_incidencia_quadro_2', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.dc_lote_incidencia_quadro_2 || 'Lote com incidência do Quadro 2'} — ${p.nm_aiu || '—'} (Lei ${p.cd_numero_lei || '—'}, Decreto ${p.cd_numero_decreto || '—'})`; }, semTexto: 'Lote sem incidência do Quadro 2.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'diretriz', titulo: 'Legislação — Diretriz Urbanística', layerName: 'geoportal:diretriz', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Diretriz ${p.cd_diretriz || '—'} — processo ${p.cd_numero_processo || '—'} (deferimento ${p.dt_deferimento ? String(p.dt_deferimento).slice(0,10) : '—'})`; }, semTexto: 'Sem diretriz urbanística incidente.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'planta_expropriatoria', titulo: 'Legislação — Planta Expropriatória', layerName: 'geoportal:planta_expropriatoria_pd', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Planta ${p.nm_planta_desap || p.nm_planta_terreno || '—'} — dispositivo legal ${p.nr_dispositivo_legal || '—'}/${p.an_dispositivo_legal || '—'} · ${p.dc_status_planta_terreno || '—'}`; }, semTexto: 'Sem planta expropriatória incidente.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'licenca_obra', titulo: 'Legislação — Licença de Obra', layerName: 'geoportal:GEOSAMPA_licenca_obra', maxFeatures: 10, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_empreendimento || '—'} — ${p.tx_endereco_empreendimento || '—'} · ${p.st_licenca_empreendimento || '—'} (${p.tx_categoria_ocupacao || '—'}) · processo ${p.cd_processo_administrativo || '—'}`; }, semTexto: 'Sem licença de obra registrada no entorno imediato.' }));
   return results;
 }
 
@@ -4330,17 +4326,17 @@ async function analisarBlocoAmbiental(terrainGeom, wkt) {
   results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'mancha_5', titulo: 'Ambiental — Mancha de Inundação (5 anos)', layerName: 'geoportal:mancha_inundacao_5', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Mancha de inundação TR 5 anos — ${p.tx_descricao || 'atingido'}`; }, semTexto: 'Fora da mancha de inundação de 5 anos.' }));
   results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'mancha_25', titulo: 'Ambiental — Mancha de Inundação (25 anos)', layerName: 'geoportal:mancha_inundacao_25', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Mancha de inundação TR 25 anos — ${p.tx_descricao || 'atingido'}`; }, semTexto: 'Fora da mancha de inundação de 25 anos.' }));
   results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'mancha_100', titulo: 'Ambiental — Mancha de Inundação (100 anos)', layerName: 'geoportal:mancha_inundacao_100', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Mancha de inundação TR 100 anos — ${p.tx_descricao || 'atingido'}`; }, semTexto: 'Fora da mancha de inundação de 100 anos.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'risco_hidrologico', titulo: 'Ambiental — Risco Hidrológico', layerName: 'geoportal:risco_hidrologico', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Risco hidrológico: ${p.tx_grau_risco || p.cd_risco || '—'}`; }, semTexto: 'Sem risco hidrológico mapeado.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'manancial_juquery', titulo: 'Ambiental — Manancial Juquery', layerName: 'geoportal:manancial_juquery', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return 'Terreno em Área de Proteção e Recuperação de Mananciais — Juquery (Lei Estadual 9.866/97).'; }, semTexto: 'Fora da Área de Manancial Juquery.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'reservatorio_amort', titulo: 'Ambiental — Reservatório de Amortecimento (Piscinão)', layerName: 'geoportal:reservatorio_amortecimento', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Reservatório: ${p.nm_reservatorio || p.tx_nome || '—'}`; }, semTexto: 'Sem reservatório de amortecimento nas proximidades.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'massa_dagua', titulo: 'Ambiental — Massa d\\u0027Água', layerName: 'geoportal:massa_d_agua', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Massa d\\u0027água: ${p.nm_massa_agua || p.tx_tipo || '—'}`; }, semTexto: 'Sem massa d\\u0027água nas proximidades.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'represa_nivel_max', titulo: 'Ambiental — Represa (Nível Máximo)', layerName: 'geoportal:represa_nivel_maximo', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Represa — nível máximo operacional: ${p.nm_represa || p.tx_descricao || '—'}`; }, semTexto: 'Fora da cota de nível máximo de represa.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'apa', titulo: 'Ambiental — Área de Proteção Ambiental (APA)', layerName: 'geoportal:GEOSAMPA_cadparcs_area_protecao_apa', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `APA: ${p.nm_apa || p.nm_area || '—'}`; }, semTexto: 'Fora de Área de Proteção Ambiental (APA).' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'parque_pde', titulo: 'Ambiental — Parque (PDE Mapa Parques)', layerName: 'geoportal:pde2014_v_parq_pde_map', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Parque previsto/existente: ${p.nm_parque || p.tx_situacao || '—'}`; }, semTexto: 'Sem parque do PDE incidente.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'remanescente_pmma', titulo: 'Ambiental — Remanescente de Mata Atlântica (PMMA)', layerName: 'geoportal:remanescente_pmma', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Remanescente PMMA: ${p.tx_classe || p.tx_estagio || '—'} — supressão sujeita a compensação.`; }, semTexto: 'Sem remanescente de Mata Atlântica incidente.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'veg_significativa', titulo: 'Ambiental — Vegetação Significativa', layerName: 'geoportal:GEOSAMPA_v_cgpabi_vegetacao_significativa', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Vegetação significativa: ${p.tx_descricao || p.nm_area || '—'}`; }, semTexto: 'Sem vegetação significativa declarada.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'arvore', titulo: 'Ambiental — Arborização (Árvores Cadastradas)', layerName: 'geoportal:arvore', maxFeatures: 20, bufferMetros: 50, marginMeters: 100, montaLinha: f => { const p = f.properties || {}; return `${p.nm_especie || p.tx_especie || 'Árvore'} — DAP: ${p.qt_dap || '—'}cm`; }, semTexto: 'Sem árvores cadastradas no entorno imediato.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'potencial_infiltracao', titulo: 'Ambiental — Potencial de Infiltração', layerName: 'geoportal:potencial_infiltracao', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Potencial de infiltração: ${p.tx_classe || p.tx_potencial || '—'}`; }, semTexto: 'Sem classificação de potencial de infiltração.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'risco_hidrologico', titulo: 'Ambiental — Risco Hidrológico', layerName: 'geoportal:risco_hidrologico', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_area_risco_hidrologico || '—'} — grau ${p.tx_grau_risco_hidrologico || '—'} · ${p.tx_tipo_processo || '—'} · setor ${p.sg_setor_risco_hidrologico || '—'} (vistoria ${p.dt_vistoria ? String(p.dt_vistoria).slice(0,10) : '—'})`; }, semTexto: 'Sem risco hidrológico mapeado.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'manancial_juquery', titulo: 'Ambiental — Manancial Juquery', layerName: 'geoportal:manancial_juquery', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Manancial Juquery — bacia ${p.nm_bacia || '—'} · classe ${p.dc_classe || p.sg_classe || '—'} (Lei Estadual 9.866/97).`; }, semTexto: 'Fora da Área de Manancial Juquery.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'reservatorio_amort', titulo: 'Ambiental — Reservatório de Amortecimento (Piscinão)', layerName: 'geoportal:reservatorio_amortecimento', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_reservatorio || '—'} (${p.cd_reservatorio || '—'}) — ${p.qt_volume_metro ? Number(p.qt_volume_metro).toLocaleString('pt-BR') + 'm³' : '—'} · ${p.tx_tipo_reservatorio || '—'} · ${p.nm_endereco || '—'}`; }, semTexto: 'Sem reservatório de amortecimento nas proximidades.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'massa_dagua', titulo: 'Ambiental — Massa d\\u0027Água', layerName: 'geoportal:massa_d_agua', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_acidente || 'Massa d\u0027água'} — ${p.qt_area_hidrografia_poligono ? Math.round(p.qt_area_hidrografia_poligono).toLocaleString('pt-BR') + 'm²' : '—'}`; }, semTexto: 'Sem massa d\\u0027água nas proximidades.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'represa_nivel_max', titulo: 'Ambiental — Represa (Nível Máximo)', layerName: 'geoportal:represa_nivel_maximo', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Represa ${p.nm_acidente || '—'} — nível máximo operacional · ${p.qt_area_represa ? Math.round(p.qt_area_represa).toLocaleString('pt-BR') + 'm²' : '—'}`; }, semTexto: 'Fora da cota de nível máximo de represa.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'apa', titulo: 'Ambiental — Área de Proteção Ambiental (APA)', layerName: 'geoportal:GEOSAMPA_cadparcs_area_protecao_apa', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `APA ${p.nm_area_protecao_ambiental || '—'} (${p.nm_esfera_administrativa || '—'}) — ${p.tx_instrumento_legal_criacao || '—'}`; }, semTexto: 'Fora de Área de Proteção Ambiental (APA).' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'parque_pde', titulo: 'Ambiental — Parque (PDE Mapa Parques)', layerName: 'geoportal:pde2014_v_parq_pde_map', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_parque_pde || '—'} (${p.cd_parque_pde || '—'}) — ${p.txt_tipo_esfera_parque || '—'} · ${p.txt_categoria_parque_pde || '—'}`; }, semTexto: 'Sem parque do PDE incidente.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'remanescente_pmma', titulo: 'Ambiental — Remanescente de Mata Atlântica (PMMA)', layerName: 'geoportal:remanescente_pmma', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.dc_classe_vegetacao || p.cd_classe_vegetacao || '—'} — ${p.qt_area_metro ? Math.round(p.qt_area_metro).toLocaleString('pt-BR') + 'm²' : '—'} · supressão sujeita a compensação (PMMA).`; }, semTexto: 'Sem remanescente de Mata Atlântica incidente.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'veg_significativa', titulo: 'Ambiental — Vegetação Significativa', layerName: 'geoportal:GEOSAMPA_v_cgpabi_vegetacao_significativa', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Lote com vegetação significativa — SQL ${p.cd_setor_fiscal || '—'}.${p.cd_quadra_fiscal || '—'}.${p.cd_lote_fiscal || '—'} (${p.tx_tema || '—'})`; }, semTexto: 'Sem vegetação significativa declarada.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'arvore', titulo: 'Ambiental — Arborização (Árvores Cadastradas)', layerName: 'geoportal:arvore', maxFeatures: 20, bufferMetros: 50, marginMeters: 100, montaLinha: f => { const p = f.properties || {}; return `Árvore cadastrada — ${p.nm_distrito_municipal || '—'} / ${p.nm_subprefeitura || '—'}`; }, semTexto: 'Sem árvores cadastradas no entorno imediato.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'potencial_infiltracao', titulo: 'Ambiental — Potencial de Infiltração', layerName: 'geoportal:potencial_infiltracao', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Potencial de infiltração: ${p.dc_potencial_infiltracao || '—'} — bacia ${p.nm_bacia || '—'}`; }, semTexto: 'Sem classificação de potencial de infiltração.' }));
   return results;
 }
 
@@ -4368,7 +4364,56 @@ async function analisarBlocoInfraestrutura(terrainGeom, wkt) {
   results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'carta_geotecnica', titulo: 'Meio Físico — Carta Geotécnica', layerName: 'geoportal:carta_geotecnica', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Unidade: ${p.tx_unidade_geotecnica || '—'} — aptidão à urbanização: ${p.tx_aptidao_geotecnica_urbanizacao || '—'}`; }, semTexto: 'Unidade geotécnica não identificada.' }));
   results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'solo_mole', titulo: 'Meio Físico — Solo Mole', layerName: 'geoportal:solo_mole', maxFeatures: 5, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Feição: ${p.nm_tipo_feicao || '—'}`; }, semTexto: 'Sem ocorrência de solo mole identificada.' }));
   results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'feira_livre', titulo: 'Equipamentos — Feira Livre', layerName: 'geoportal:equipamento_feira_livre', maxFeatures: 5, marginMeters: 200, bufferMetros: 150, montaLinha: f => { const p = f.properties || {}; return `${p.nm_equipamento || '—'} — ${p.tx_dia_funcionamento || '—'} — ${p.tx_horario_funcionamento || '—'}`; }, semTexto: 'Sem feira livre num raio de 150m do terreno.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'cobertura_vegetal', titulo: 'Verde — Mapeamento da Cobertura Vegetal', layerName: 'geoportal:cobertura_vegetal', maxFeatures: 10, marginMeters: 150, montaLinha: f => { const p = f.properties || {}; return `${p.tx_descricao_categoria_subcategoria || '—'} — área: ${p.qt_area_vegetacao ? Math.round(p.qt_area_vegetacao).toLocaleString('pt-BR') : '—'}m² — altura média: ${p.qt_altura_media_vegetacao || '—'}m`; }, semTexto: 'Sem cobertura vegetal significativa mapeada incidente.' }));
+  // Cobertura Vegetal — a base do GeoSampa traz qt_altura_media_vegetacao
+  // sempre zerada (campo existe no schema mas nunca foi populado), por isso
+  // a altura não é reportada. Agrupa por categoria e soma as áreas.
+  {
+    const _itemCob = await _itemCamadaUnica(terrainGeom, wkt, {
+      id: 'cobertura_vegetal', titulo: 'Verde — Mapeamento da Cobertura Vegetal',
+      layerName: 'geoportal:cobertura_vegetal', maxFeatures: 40, marginMeters: 150,
+      montaLinha: f => {
+        const p = f.properties || {};
+        const a = p.qt_area_vegetacao ? Math.round(p.qt_area_vegetacao).toLocaleString('pt-BR') : '—';
+        return `${p.tx_descricao_categoria_subcategoria || '—'} — ${a}m²`;
+      },
+      semTexto: 'Sem cobertura vegetal significativa mapeada incidente.'
+    });
+
+    // Anexa a legenda oficial (cores do GetLegendGraphic do WMS) às categorias
+    // efetivamente presentes, para leitura junto com a imagem do mapa.
+    if (_itemCob.temInterferencia && Array.isArray(_itemCob.resumoLinhas)) {
+      const legendaOficial = [
+        ['Floresta ombrófila densa secundária em estágio avançado e floresta ombrófila densa primária', '#5A7362'],
+        ['Floresta ombrófila densa secundária em estágio médio',        '#5CCA58'],
+        ['Floresta ombrófila densa secundária em estágio inicial',      '#9EEFAD'],
+        ['Floresta ombrófila densa alto-montana (mata nebular)',        '#5A9562'],
+        ['Floresta paludosa e ou de várzea',                            '#CDC35F'],
+        ['Campos alto-montanos',                                        '#DFEA7A'],
+        ['Vegetação herbáceo-arbustiva de várzea ou de brejo',          '#F7FF5C'],
+        ['Vegetação aquática flutuante',                                '#FEBC65'],
+        ['Maciços florestais heterogêneos e bosques urbanos',           '#FF7C4C'],
+        ['Maciços florestais homogêneos',                               '#964F65'],
+        ['Baixa cobertura arbórea, arbóreo-arbustiva e ou arborescente','#F5ADF2'],
+        ['Agricultura',                                                 '#FED6A8'],
+        ['Média a alta cobertura arbórea, arbóreo-arbustiva e ou arborescente', '#9E62DD'],
+        ['Vegetação herbáceo-arbustiva',                                '#FF5CB0'],
+        ['Mista',                                                       '#BE584C'],
+      ];
+      const norm = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+      const presentes = new Set(_itemCob.resumoLinhas
+        .map(l => norm(String(l).split(' — ')[0]))
+        .filter(Boolean));
+      const usadas = legendaOficial.filter(([cat]) => presentes.has(norm(cat)));
+      if (usadas.length > 0) {
+        _itemCob.resumoLinhas.push('');
+        _itemCob.resumoLinhas.push('Legenda de cores (GeoSampa · Mapeamento da Cobertura Vegetal):');
+        usadas.forEach(([cat, hex]) => _itemCob.resumoLinhas.push(`  [${hex}] ${cat}`));
+      }
+      _itemCob.resumoLinhas.push('');
+      _itemCob.resumoLinhas.push('Altura média da vegetação não informada na base do GeoSampa (campo existe mas vem zerado em toda a cidade). Levantamento em campo necessário para laudo arbóreo.');
+    }
+    results.push(_itemCob);
+  }
   results.push(await _itemCamadaUnica(terrainGeom, wkt, {
     id: 'risco_geologico', titulo: 'Meio Físico — Área de Risco Geológico',
     layerName: 'geoportal:area_risco_geologico', maxFeatures: 5, marginMeters: 200,
@@ -4376,15 +4421,15 @@ async function analisarBlocoInfraestrutura(terrainGeom, wkt) {
     semTexto: 'Sem área de risco geológico incidente.'
   }));
 
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'deslizamento', titulo: 'Meio Físico — Risco de Deslizamento', layerName: 'geoportal:risco_ocorrencia_risco_deslizamento', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Ocorrência de risco de deslizamento: ${p.tx_grau || p.cd_risco || '—'}`; }, semTexto: 'Sem ocorrência de risco de deslizamento mapeada.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'restricao_geotecnica', titulo: 'Meio Físico — Restrição Geotécnica', layerName: 'geoportal:restricao_geotecnica', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Restrição geotécnica: ${p.tx_restricao || p.tx_classe || '—'}`; }, semTexto: 'Sem restrição geotécnica mapeada.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'declividade', titulo: 'Meio Físico — Declividade', layerName: 'geoportal:declividade', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Faixa de declividade: ${p.tx_faixa_declividade || p.tx_classe || '—'}`; }, semTexto: 'Sem classificação de declividade disponível.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'arruamento_aprovado', titulo: 'Infraestrutura — Arruamento Aprovado', layerName: 'geoportal:arruamento_aprovado', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Arruamento aprovado — processo ${p.cd_processo || p.nr_alvara || '—'}`; }, semTexto: 'Sem arruamento aprovado incidente.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'desmembramento', titulo: 'Infraestrutura — Desmembramento de Gleba', layerName: 'geoportal:desmembramento_gleba', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Desmembramento — processo ${p.cd_processo || p.nr_alvara || '—'}`; }, semTexto: 'Sem desmembramento de gleba registrado.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'croqui_patrimonial', titulo: 'Infraestrutura — Croqui Patrimonial', layerName: 'geoportal:GEOSAMPA_croqui_patrimonial_cidadao', maxFeatures: 5, bufferMetros: 50, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Croqui patrimonial — ${p.cd_sql || p.tx_descricao || '—'}`; }, semTexto: 'Sem croqui patrimonial vinculado.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'linha_at_subterranea', titulo: 'Infraestrutura — Linha de Alta Tensão Subterrânea', layerName: 'geoportal:linha_subterranea_alta_tensao', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Linha subterrânea de alta tensão — ${p.tx_tensao || p.nm_linha || '—'}`; }, semTexto: 'Sem linha subterrânea de alta tensão nas proximidades.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'transpetro_duto', titulo: 'Infraestrutura — Duto Transpetro', layerName: 'geoportal:transpetro_duto', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Duto Transpetro: ${p.nm_duto || p.tx_produto || '—'} — faixa de servidão com restrição de uso.`; }, semTexto: 'Sem duto Transpetro nas proximidades.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'mirante_santana', titulo: 'Infraestrutura — Restrição Mirante de Santana', layerName: 'geoportal:restricao_mirante_santana', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Restrição do Mirante de Santana (radar meteorológico): ${p.tx_restricao || p.qt_altura_maxima || '—'}`; }, semTexto: 'Fora da área de restrição do Mirante de Santana.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'deslizamento', titulo: 'Meio Físico — Risco de Deslizamento', layerName: 'geoportal:risco_ocorrencia_risco_deslizamento', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_area_risco || p.nm_area_risco_geologico || '—'} — grau ${p.tx_grau_risco || p.tx_grau_risco_geologico || '—'}`; }, semTexto: 'Sem ocorrência de risco de deslizamento mapeada (camada publicada pela PMSP sem registros na data da consulta).' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'restricao_geotecnica', titulo: 'Meio Físico — Restrição Geotécnica', layerName: 'geoportal:restricao_geotecnica', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Perímetro ${p.nm_perimetro || '—'} — ${p.tx_regulamentacao || '—'}`; }, semTexto: 'Sem restrição geotécnica mapeada.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'declividade', titulo: 'Meio Físico — Declividade', layerName: 'geoportal:declividade', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Classe de declividade: ${p.nm_classe_declividade || '—'}`; }, semTexto: 'Sem classificação de declividade disponível.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'arruamento_aprovado', titulo: 'Infraestrutura — Arruamento Aprovado', layerName: 'geoportal:arruamento_aprovado', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Planta ${p.cd_numero_planta_arr || '—'} — processo ${p.cd_numero_processo || '—'}`; }, semTexto: 'Sem arruamento aprovado incidente.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'desmembramento', titulo: 'Infraestrutura — Desmembramento de Gleba', layerName: 'geoportal:desmembramento_gleba', maxFeatures: 5, bufferMetros: 150, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Planta ${p.nr_planta_desmembramento || '—'} — alvará ${p.cd_alvara_desmembramento || '—'} (${p.dt_alvara_desmembramento ? String(p.dt_alvara_desmembramento).slice(0,10) : '—'})`; }, semTexto: 'Sem desmembramento de gleba registrado.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'croqui_patrimonial', titulo: 'Infraestrutura — Croqui Patrimonial', layerName: 'geoportal:GEOSAMPA_croqui_patrimonial_cidadao', maxFeatures: 5, bufferMetros: 50, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Croqui ${p.nr_croqui || '—'} — ${p.dc_tipo_uso || '—'} · ${p.dc_tipo_status_projeto || '—'} (origem ${p.tx_origem || '—'})`; }, semTexto: 'Sem croqui patrimonial vinculado.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'linha_at_subterranea', titulo: 'Infraestrutura — Linha de Alta Tensão Subterrânea', layerName: 'geoportal:linha_subterranea_alta_tensao', maxFeatures: 5, bufferMetros: 100, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_linha_subterranea_alta_tensao || 'Linha subterrânea de alta tensão'}`; }, semTexto: 'Sem linha subterrânea de alta tensão nas proximidades.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'transpetro_duto', titulo: 'Infraestrutura — Duto Transpetro', layerName: 'geoportal:transpetro_duto', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Duto Transpetro (id ${p.cd_identificador_transpetro_duto || '—'}) — faixa de servidão com restrição de uso; consultar Transpetro.`; }, semTexto: 'Sem duto Transpetro nas proximidades.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'mirante_santana', titulo: 'Infraestrutura — Restrição Mirante de Santana', layerName: 'geoportal:restricao_mirante_santana', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Restrição Mirante de Santana — altura máxima ${p.qt_altura_edificacao_mirante || '—'}m · cota ${p.qt_ponto_cotado_altimetria || '—'}m · ${p.tx_legislacao || '—'}`; }, semTexto: 'Fora da área de restrição do Mirante de Santana.' }));
   return results;
 }
 
@@ -4652,9 +4697,9 @@ async function analisarBloco3Patrimonio(terrainGeom, wkt) {
 
 
 
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'zepec_apc', titulo: 'Patrimônio — ZEPEC-APC (Área de Proteção Cultural)', layerName: 'geoportal:zona_especial_preservacao_cultural_apc', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `ZEPEC-APC: ${p.nm_zepec || p.cd_zepec || '—'}`; }, semTexto: 'Fora de ZEPEC-APC.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'sitio_arqueologico', titulo: 'Patrimônio — Sítio Arqueológico', layerName: 'geoportal:patrimonio_cultural_sitio_arqueologico', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Sítio arqueológico: ${p.nm_sitio || p.tx_descricao || '—'} — consulta obrigatória ao IPHAN.`; }, semTexto: 'Sem sítio arqueológico registrado nas proximidades.' }));
-  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'area_arqueologica', titulo: 'Patrimônio — Área Arqueológica', layerName: 'geoportal:patrimonio_cultural_area_arqueologica', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `Área arqueológica: ${p.nm_area || p.tx_descricao || '—'} — consulta obrigatória ao IPHAN.`; }, semTexto: 'Sem área arqueológica registrada nas proximidades.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'zepec_apc', titulo: 'Patrimônio — ZEPEC-APC (Área de Proteção Cultural)', layerName: 'geoportal:zona_especial_preservacao_cultural_apc', maxFeatures: 5, bufferMetros: 200, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_zepec || '—'} — ${p.nm_endereco || '—'} · CONPRESP ${p.tx_conpresp || '—'}`; }, semTexto: 'Fora de ZEPEC-APC.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'sitio_arqueologico', titulo: 'Patrimônio — Sítio Arqueológico', layerName: 'geoportal:patrimonio_cultural_sitio_arqueologico', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_bem_arqueologico || '—'} (${p.dc_tipo_categoria || '—'}, ${p.tx_datacao_bem_arqueologico || '—'}) — CNSA ${p.cd_numero_cadastro_nacional || '—'} · ${p.dc_tipo_situacao || '—'} — consulta obrigatória ao IPHAN.`; }, semTexto: 'Sem sítio arqueológico registrado nas proximidades.' }));
+  results.push(await _itemCamadaUnica(terrainGeom, wkt, { id: 'area_arqueologica', titulo: 'Patrimônio — Área Arqueológica', layerName: 'geoportal:patrimonio_cultural_area_arqueologica', maxFeatures: 5, bufferMetros: 300, marginMeters: 200, montaLinha: f => { const p = f.properties || {}; return `${p.nm_area_tombada || '—'} — CONPRESP ${p.tx_resolucao_conpresp || 'não consta'} · IPHAN ${p.tx_resolucao_iphan || 'não consta'}`; }, semTexto: 'Sem área arqueológica registrada nas proximidades.' }));
   return results;
 }
 
@@ -4683,6 +4728,59 @@ function _pdfSafeChars(s) {
     .replace(/[^\u0000-\u00FF]/g, ' ')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+}
+
+// ── E-mail do usuário logado no Giraffe ──────────────────────────────
+// A chave exata no giraffeState varia por versão do SDK, então testamos
+// várias e, como último recurso, decodificamos o JWT de claims.
+let _kvUserEmailCache = null;
+async function _getUserEmail() {
+  if (_kvUserEmailCache !== null) return _kvUserEmailCache;
+
+  const pick = o => {
+    if (!o) return '';
+    if (typeof o === 'string' && o.includes('@')) return o;
+    return o.email || o.userEmail || o.user_email || o.username || o.preferred_username
+        || o.user?.email || o.profile?.email || o.claims?.email || '';
+  };
+
+  // 1) Chaves conhecidas do giraffeState
+  const chaves = ['giraffe_user','user','currentUser','userInfo','me','profile','account'];
+  for (const k of chaves) {
+    try {
+      const v = giraffeState.get(k);
+      const e = pick(v);
+      if (e) { console.log(`[KV] e-mail via giraffeState('${k}')`, v); _kvUserEmailCache = e; return e; }
+    } catch(_) {}
+  }
+
+  // 2) Varre o state inteiro procurando algo que pareça e-mail
+  try {
+    const all = (typeof giraffeState.getAll === 'function') ? giraffeState.getAll() : null;
+    if (all && typeof all === 'object') {
+      console.log('[KV] chaves disponíveis no giraffeState:', Object.keys(all));
+      for (const [k, v] of Object.entries(all)) {
+        const e = pick(v);
+        if (e) { console.log(`[KV] e-mail via giraffeState.getAll().${k}`, v); _kvUserEmailCache = e; return e; }
+      }
+    }
+  } catch(_) {}
+
+  // 3) JWT de claims — payload base64 traz o e-mail
+  try {
+    const jwt = await rpc.invoke('getUserClaimsJwt', []);
+    const token = typeof jwt === 'string' ? jwt : (jwt?.token || jwt?.jwt || '');
+    const parte = String(token).split('.')[1];
+    if (parte) {
+      const json = JSON.parse(decodeURIComponent(escape(atob(parte.replace(/-/g,'+').replace(/_/g,'/')))));
+      console.log('[KV] claims JWT:', json);
+      const e = pick(json);
+      if (e) { _kvUserEmailCache = e; return e; }
+    }
+  } catch(err) { console.warn('[KV] getUserClaimsJwt falhou:', err); }
+
+  _kvUserEmailCache = '';
+  return '';
 }
 
 // Logo KV (assinatura POS, fundo claro) para o cabeçalho do PDF.
@@ -4980,6 +5078,21 @@ function _addBloco1CardsToPDF(pdf, items, generatedAt) {
 
     pdf.setFontSize(9);
     linhas.forEach(line => {
+      // Linha de legenda no formato "  [#RRGGBB] Descrição" → desenha o
+      // quadradinho da cor real antes do texto (usado na Cobertura Vegetal)
+      const mLeg = /^\s*\[#([0-9A-Fa-f]{6})\]\s*(.+)$/.exec(String(line));
+      if (mLeg) {
+        const hex = mLeg[1];
+        const r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
+        pdf.setFillColor(r,g,b);
+        pdf.setDrawColor(90,90,90); pdf.setLineWidth(0.15);
+        pdf.rect(marginX + 2, cursorY + 0.6, 3.2, 3.2, 'FD');
+        pdf.setTextColor(40,40,40);
+        const wrappedLeg = _safeWrap(pdf, mLeg[2], contentW - 8);
+        pdf.text(wrappedLeg, marginX + 7, cursorY + 3.2);
+        cursorY += wrappedLeg.length * 4.6;
+        return;
+      }
       // Cor por status: encontrado/incide = verde · sem incidência = vermelho
       if (/sem incidência|dentro da tolerância|Fora d|fora d|não encontrad|Sem /i.test(line)) {
         pdf.setTextColor(190, 40, 40);        // vermelho — sem incidência
@@ -5163,14 +5276,11 @@ window.exportReportPDF = async function() {
 
   try {
     const dataHora = new Date().toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
-    // E-mail do usuário logado no Giraffe (giraffe_user) — usado no cabeçalho
-    // e no rodapé para rastrear quem gerou o relatório.
-    let userEmail = '';
-    try {
-      const u = giraffeState.get('giraffe_user');
-      userEmail = u?.email || u?.username || u?.name || '';
-      if (userEmail) log('info', `PDF: gerado por ${userEmail}`);
-    } catch(e) { log('warn', `PDF: e-mail do usuário indisponível — ${e.message}`); }
+    // E-mail do usuário logado — tenta várias chaves do giraffeState e,
+    // se preciso, o RPC getUserClaimsJwt (payload do JWT tem o e-mail).
+    const userEmail = await _getUserEmail();
+    if (userEmail) log('ok', `PDF: gerado por ${userEmail}`);
+    else log('warn', 'PDF: e-mail do usuário não identificado (ver diagnóstico no console).');
     const now = userEmail ? `${dataHora} · ${userEmail}` : dataHora;
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
@@ -5844,7 +5954,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V131 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V134 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
