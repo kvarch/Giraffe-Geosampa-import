@@ -5672,10 +5672,73 @@ window.runMedianas = async function() {
       const last = grupos.pop();
       grupos[0] = [...last, ...grupos[0]];
     }
+    log('info', `Medianas: ${grupos.length} grupo(s) por vizinha`);
+
+    // ── 6b. Funde grupos colineares consecutivos ──
+    // Uma mesma rua pode confrontar várias quadras menores do outro lado.
+    // Nesse caso o agrupamento por vizId quebra a face em vários pedaços.
+    // Se dois grupos consecutivos têm direção quase paralela E estão alinhados
+    // (deslocamento lateral pequeno), pertencem à mesma rua → funde.
+    const _dirGrupo = (g) => {
+      if (g.length < 2) return null;
+      const a = g[0].pt, b = g[g.length-1].pt;
+      const cosL = Math.cos(a[1]*_radm);
+      const dx = (b[0]-a[0])*_radm*_Rm*cosL, dy = (b[1]-a[1])*_radm*_Rm;
+      const n = Math.sqrt(dx*dx+dy*dy);
+      return n < 1e-9 ? null : { ux: dx/n, uy: dy/n, len: n };
+    };
+    // Distância perpendicular do ponto p à reta que passa por g (em metros)
+    const _desvioLateral = (g, p) => {
+      const d = _dirGrupo(g); if (!d) return Infinity;
+      const a = g[0].pt, cosL = Math.cos(a[1]*_radm);
+      const vx = (p[0]-a[0])*_radm*_Rm*cosL, vy = (p[1]-a[1])*_radm*_Rm;
+      return Math.abs(vx*(-d.uy) + vy*d.ux);
+    };
+
+    const COS_TOL = Math.cos(20 * Math.PI/180); // até 20° de diferença angular
+    const DESVIO_MAX = 6;                        // até 6m de desalinhamento lateral
+
+    let fundidos = [];
+    for (const g of grupos) {
+      if (fundidos.length === 0) { fundidos.push([...g]); continue; }
+      const prev = fundidos[fundidos.length-1];
+      const dPrev = _dirGrupo(prev), dCur = _dirGrupo(g);
+      if (dPrev && dCur) {
+        const dot = Math.abs(dPrev.ux*dCur.ux + dPrev.uy*dCur.uy);
+        const desvio = _desvioLateral(prev, g[Math.floor(g.length/2)].pt);
+        if (dot >= COS_TOL && desvio <= DESVIO_MAX) {
+          // mesma rua, vizinha diferente → funde
+          prev.push(...g);
+          continue;
+        }
+      }
+      fundidos.push([...g]);
+    }
+    // Verifica também o fechamento do anel após a fusão
+    if (fundidos.length > 2) {
+      const first = fundidos[0], last = fundidos[fundidos.length-1];
+      const dF = _dirGrupo(first), dL = _dirGrupo(last);
+      if (dF && dL) {
+        const dot = Math.abs(dF.ux*dL.ux + dF.uy*dL.uy);
+        const desvio = _desvioLateral(last, first[Math.floor(first.length/2)].pt);
+        if (dot >= COS_TOL && desvio <= DESVIO_MAX) {
+          fundidos[0] = [...last, ...first];
+          fundidos.pop();
+        }
+      }
+    }
+    if (fundidos.length !== grupos.length) {
+      log('ok', `Medianas: ${grupos.length} grupo(s) fundido(s) em ${fundidos.length} face(s) contínua(s)`);
+    }
+    grupos.length = 0; grupos.push(...fundidos);
+
     log('info', `Medianas: ${grupos.length} face(s) identificada(s)`);
     grupos.forEach((g,i) => {
       const uniqViz=[...new Set(g.map(p=>p.vizId))];
-      log('info', `  face ${i+1}: ${g.length} pts, vizId=${g[0].vizId} (${uniqViz.length} vizIds únicos)`);
+      const desc = uniqViz.length > 1
+        ? `${uniqViz.length} quadras vizinhas [${uniqViz.join(', ')}]`
+        : `vizId=${uniqViz[0]}`;
+      log('info', `  face ${i+1}: ${g.length} pts, ${desc}`);
     });
 
     // ── 7. Linha mediana reta por face ──
@@ -5710,17 +5773,22 @@ window.runMedianas = async function() {
       const lo = Math.min(...projs), hi = Math.max(...projs);
       log('info',`Medianas: face vizId=${grupo[0].vizId} pts=${grupo.length} dir=(${ux.toFixed(3)},${uy.toFixed(3)}) span=${(hi-lo).toFixed(1)}m`);
 
-      // Largura média
+      // Largura: usa a MEDIANA em vez da média. Com faces fundidas (uma rua
+      // que confronta várias quadras de tamanhos diferentes), uma quadra
+      // recuada distorceria a média — a mediana é robusta a esses outliers.
       const dists = grupo.map(p => {
-        if (!p.near) return 0;
+        if (!p.near) return null;
         const cosL = Math.cos(p.pt[1]*_radm);
         const dx = (p.near[0]-p.pt[0])*_radm*_Rm*cosL;
         const dy = (p.near[1]-p.pt[1])*_radm*_Rm;
         return Math.sqrt(dx*dx+dy*dy);
-      });
-      const largura = dists.reduce((s,d)=>s+d,0) / dists.length;
+      }).filter(d => d != null && d > 0).sort((a,b) => a-b);
+      const largura = dists.length
+        ? (dists.length % 2 ? dists[(dists.length-1)>>1]
+                            : (dists[dists.length/2 - 1] + dists[dists.length/2]) / 2)
+        : 0;
 
-      medLines.push({ cx:mCx, cy:mCy, ux, uy, lo, hi, largura, vizId:grupo[0].vizId, refCx, refCy });
+      medLines.push({ cx:mCx, cy:mCy, ux, uy, lo, hi, largura, vizId:grupo[0].vizId, vizIds:[...new Set(grupo.map(p=>p.vizId))], refCx, refCy });
     }
 
     if (medLines.length === 0) { setMedianasStatus('warn', '⚠ Nenhuma mediana calculada.'); return; }
@@ -5784,8 +5852,10 @@ window.runMedianas = async function() {
           label: `Mediana ${i+1} (~${largura}m)`
         }
       });
-      resumo.push(`Face ${i+1}: ~${largura}m entre alinhamentos (vizinha ${cur.vizId})`);
-      log('ok', `Mediana ${i+1}: ~${largura}m (vizinha id=${cur.vizId})`);
+      const nViz = cur.vizIds?.length || 1;
+      const descViz = nViz > 1 ? `${nViz} quadras vizinhas` : `vizinha ${cur.vizId}`;
+      resumo.push(`Face ${i+1}: ~${largura}m entre alinhamentos (${descViz})`);
+      log('ok', `Mediana ${i+1}: ~${largura}m (${descViz})`);
     }
 
     if (finalFeatures.length === 0) { setMedianasStatus('warn', '⚠ Nenhuma mediana gerada.'); return; }
@@ -5963,7 +6033,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V138 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V139 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
