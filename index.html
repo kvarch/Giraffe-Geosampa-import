@@ -447,7 +447,15 @@
   <div class="tabs">
     <div class="tab active" data-tab="importar" onclick="switchTab('importar')">Importar dados</div>
     <div class="tab" data-tab="report" onclick="switchTab('report')">📋 Relatório</div>
-    <div class="tab" data-tab="envoltoria" onclick="switchTab('envoltoria')">📐 Envoltória</div>
+    <div class="tab" data-tab="envoltoria" onclick="switchTab('envoltoria')"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:inline-block;vertical-align:middle;margin-right:5px">
+  <!-- linha base -->
+  <line x1="1" y1="14.5" x2="15" y2="14.5" stroke="currentColor" stroke-width="1.4"/>
+  <!-- trapézio tracejado (recuos) -->
+  <path d="M3 14.5 L1.5 4 M13 14.5 L14.5 4 M1.5 4 L14.5 4" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" stroke-linecap="round"/>
+  <!-- volume construído (sólido, hachura) -->
+  <rect x="5" y="8" width="6" height="6.5" fill="currentColor" opacity="0.18"/>
+  <rect x="5" y="8" width="6" height="6.5" stroke="currentColor" stroke-width="1.2"/>
+</svg>Recuos</div>
     <div class="tab" data-tab="log" onclick="switchTab('log')">Log</div>
     <div class="tab" data-tab="proxy" onclick="switchTab('proxy')">⚙ Proxy</div>
   </div>
@@ -6033,7 +6041,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V139 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V140 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
