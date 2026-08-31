@@ -1518,16 +1518,44 @@ window.runPresetLotes = async function() {
   const proxyOk = await ensureProxyReady();
   if (!proxyOk) { setScanStatus('error', '⚠ Proxy não respondeu.'); return; }
 
-  setScanStatus('loading', 'Importando lotes incidentes...');
-  const wktExato = geojsonToWKT(geom);
+  setScanStatus('loading', 'Identificando quadra(s) fiscal(is)...');
+  const wktTerreno = geojsonToWKT(geom);
   try {
-    const gj = await fetchWFSByGeom('geoportal:lote_cidadao', wktExato, 200);
-    const feats = gj?.features || [];
-    if (feats.length === 0) {
-      setScanStatus('warn', '⚠ Nenhum lote incidente encontrado.');
-      log('warn', 'Lotes: nenhuma feição incidente no terreno.');
+    // 1. Encontra a(s) quadra(s) fiscal(is) que o terreno intersecta
+    const gjQ = await fetchWFSByGeom('geoportal:quadra_fiscal', wktTerreno, 20);
+    const quadras = gjQ?.features || [];
+    if (quadras.length === 0) {
+      setScanStatus('warn', '⚠ Nenhuma quadra fiscal identificada para este terreno.');
+      log('warn', 'Lotes: quadra_fiscal sem resultado para o terreno.');
       return;
     }
+    log('info', `Lotes: ${quadras.length} quadra(s) fiscal(is) identificada(s) — setor(es): ${[...new Set(quadras.map(q=>q.properties?.cd_setor_fiscal))].join(', ')}`);
+
+    // 2. Une as geometrias das quadras (pode ser mais de uma)
+    let quadraGeom;
+    if (quadras.length === 1) {
+      quadraGeom = quadras[0].geometry;
+    } else {
+      // múltiplas quadras → convex hull da union para garantir cobertura
+      const pts = quadras.flatMap(q => {
+        const coords = q.geometry?.type === 'Polygon' ? q.geometry.coordinates[0]
+          : q.geometry?.coordinates?.flat() || [];
+        return coords.map(c => turf.point(c));
+      });
+      quadraGeom = turf.convex(turf.featureCollection(pts))?.geometry || quadras[0].geometry;
+    }
+
+    // 3. Busca todos os lotes dentro da(s) quadra(s)
+    setScanStatus('loading', 'Importando lotes da(s) quadra(s)...');
+    const wktQuadra = geojsonToWKT(quadraGeom);
+    const gjL = await fetchWFSByGeom('geoportal:lote_cidadao', wktQuadra, 500);
+    const feats = gjL?.features || [];
+    if (feats.length === 0) {
+      setScanStatus('warn', '⚠ Nenhum lote encontrado na(s) quadra(s).');
+      log('warn', 'Lotes: nenhum lote_cidadao dentro da quadra fiscal.');
+      return;
+    }
+
     const comEstilo = feats.map(f => {
       const p = f.properties || {};
       const sql = p.cd_digito_sql
@@ -1536,10 +1564,11 @@ window.runPresetLotes = async function() {
                        'fill-opacity':0.25, _layer:'Lotes', kv_sql:sql, label:sql, name:sql };
       return f;
     });
+
     await rpc.invoke('updateGeoJSONLayerContents', ['Cadastro · Lotes',
       { type:'FeatureCollection', features: comEstilo }]);
-    setScanStatus('success', `✓ ${feats.length} lote(s) importado(s).`);
-    log('ok', `Lotes: ${feats.length} lote(s) incidente(s) importado(s).`);
+    setScanStatus('success', `✓ ${feats.length} lote(s) da(s) quadra(s) importado(s).`);
+    log('ok', `Lotes: ${feats.length} lote(s) importado(s) (${quadras.length} quadra(s)).`);
   } catch (e) {
     setScanStatus('error', `Erro: ${e.message}`);
     log('err', `Lotes: ${e.message}`);
@@ -6231,7 +6260,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V141 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V142 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
