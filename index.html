@@ -507,8 +507,35 @@
          <button class="btn btn-ghost" style="width:100%; border-color:var(--kv-blue); color:var(--kv-blue); margin-bottom: 6px;" onclick="window.runPresetBase()">
            🏙 Importar Pacote Base (Quadras, Calçadas, Praças e Ruas)
          </button>
-         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);line-height:1.4">
+         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);line-height:1.4;margin-bottom:10px">
           Gera 5 layers com cores pré-definidas. A <b>Rua (Cinza Escuro)</b> é gerada matematicamente subtraindo as quadras, praças e calçadas do terreno.
+         </div>
+
+         <button class="btn btn-ghost" style="width:100%; border-color:var(--kv-blue); color:var(--kv-blue); margin-bottom:6px;" onclick="window.runPresetCurvas()">
+           ⛰ Importar Curvas de Nível (buffer 60m)
+         </button>
+         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);line-height:1.4;margin-bottom:10px">
+          Curva mestra, mestra-S e intermediária em layers separados, mais um layer de <b>Cotas</b> com os pontos rotulados pela altitude.
+         </div>
+
+         <button class="btn btn-ghost" style="width:100%; border-color:var(--kv-blue); color:var(--kv-blue); margin-bottom:6px;" onclick="window.runPresetLotes()">
+           ▦ Importar Lotes (incidentes no terreno)
+         </button>
+         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);line-height:1.4">
+          Importa apenas os lotes que tocam o terreno selecionado, rotulados pelo SQL.
+         </div>
+       </div>
+
+       <div class="card" id="mdcCard" style="margin-top:8px">
+         <div class="card-label">Folhas MDC do Terreno</div>
+         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);line-height:1.4;margin-bottom:8px">
+          Quadrículas do Mapa Digital da Cidade que incidem no terreno selecionado.
+         </div>
+         <button class="btn btn-ghost" style="width:100%;margin-bottom:8px" onclick="window.identificarFolhasMDC()">
+           🔎 Identificar Folhas MDC
+         </button>
+         <div id="mdcResult" style="font-family:var(--mono);font-size:10px;color:var(--muted)">
+          Selecione o terreno e clique para identificar.
          </div>
        </div>
       <div class="card">
@@ -1397,6 +1424,169 @@ window.runImport=async function(){
  // ══════════════════════════════════════════════════════════════════
  // PACOTE BASE (FILTRO RÁPIDO COM TURF.JS)
  // ══════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════
+// FILTRO RÁPIDO — CURVAS DE NÍVEL
+// Importa curva mestra, mestra-S e intermediária em layers separados,
+// mais um layer de pontos cotados rotulados pela altitude.
+// ══════════════════════════════════════════════════════════════════
+window.runPresetCurvas = async function() {
+  const geom = _forcedGeometry || currentGeometry;
+  if (!geom) { log('warn', 'Curvas: selecione o terreno primeiro (botão 🖱).'); setScanStatus('warn', '⚠ Selecione o terreno antes.'); return; }
+  const proxyOk = await ensureProxyReady();
+  if (!proxyOk) { setScanStatus('error', '⚠ Proxy não respondeu.'); return; }
+
+  setScanStatus('loading', 'Importando curvas de nível...');
+  log('info', '─── Curvas de Nível (buffer 60m) ───');
+
+  const wktBuf = geojsonToWKT(turfBuffer(geom, 60));
+  if (!wktBuf) { log('err', 'Curvas: falha ao gerar o buffer de 60m.'); return; }
+
+  const alvos = [
+    { id: 'geoportal:curva_mestra',         label: 'Curva Mestra',         cor: '#8B4513', peso: 2 },
+    { id: 'geoportal:curva_mestra_s',       label: 'Curva Mestra S',       cor: '#A0522D', peso: 2 },
+    { id: 'geoportal:curva_intermediaria',  label: 'Curva Intermediária',  cor: '#C89060', peso: 1 },
+  ];
+
+  let totalCurvas = 0;
+  const cotasFeatures = [];
+
+  for (const t of alvos) {
+    try {
+      const gj = await fetchWFSByGeom(t.id, wktBuf, 3000);
+      const feats = gj?.features || [];
+      if (feats.length === 0) { log('warn', `Curvas: ${t.label} sem feições no buffer.`); continue; }
+
+      const comEstilo = feats.map(f => {
+        const cota = f.properties?.cd_numero_isovalor ?? null;
+        f.properties = {
+          ...(f.properties || {}),
+          stroke: t.cor, 'stroke-width': t.peso, fill: 'none',
+          _layer: t.label,
+          kv_cota: cota,
+          label: cota != null ? String(cota) : undefined,
+        };
+        return f;
+      });
+
+      await rpc.invoke('updateGeoJSONLayerContents', [`Topo · ${t.label}`,
+        { type: 'FeatureCollection', features: comEstilo }]);
+      totalCurvas += feats.length;
+      log('ok', `Curvas: ${t.label} — ${feats.length} feição(ões).`);
+    } catch (e) {
+      log('warn', `Curvas: ${t.label} falhou — ${e.message}`);
+    }
+  }
+
+  // Pontos cotados — layer separado, rotulado pela altitude
+  try {
+    const gjPc = await fetchWFSByGeom('geoportal:ponto_cotado', wktBuf, 2000);
+    const pcs = gjPc?.features || [];
+    pcs.forEach(f => {
+      const alt = f.properties?.cd_altitude;
+      cotasFeatures.push({
+        type: 'Feature',
+        geometry: f.geometry,
+        properties: {
+          _layer: 'Cotas Altimétricas',
+          kv_altitude: alt,
+          label: alt != null ? String(alt) : '',
+          text: alt != null ? String(alt) : '',
+          name: alt != null ? String(alt) : '',
+          'marker-color': '#8B4513', radius: 0.1,
+        },
+      });
+    });
+  } catch (e) { log('warn', `Cotas: ponto_cotado falhou — ${e.message}`); }
+
+  if (cotasFeatures.length > 0) {
+    await rpc.invoke('updateGeoJSONLayerContents', ['Topo · Cotas Altimétricas',
+      { type: 'FeatureCollection', features: cotasFeatures }]);
+    log('ok', `Cotas: ${cotasFeatures.length} ponto(s) cotado(s) importado(s).`);
+  }
+
+  setScanStatus('success', `✓ ${totalCurvas} curva(s) e ${cotasFeatures.length} cota(s) importadas.`);
+  log('ok', '─── Curvas de Nível concluídas ───');
+};
+
+// ══════════════════════════════════════════════════════════════════
+// FILTRO RÁPIDO — LOTES incidentes no terreno
+// ══════════════════════════════════════════════════════════════════
+window.runPresetLotes = async function() {
+  const geom = _forcedGeometry || currentGeometry;
+  if (!geom) { log('warn', 'Lotes: selecione o terreno primeiro (botão 🖱).'); setScanStatus('warn', '⚠ Selecione o terreno antes.'); return; }
+  const proxyOk = await ensureProxyReady();
+  if (!proxyOk) { setScanStatus('error', '⚠ Proxy não respondeu.'); return; }
+
+  setScanStatus('loading', 'Importando lotes incidentes...');
+  const wktExato = geojsonToWKT(geom);
+  try {
+    const gj = await fetchWFSByGeom('geoportal:lote_cidadao', wktExato, 200);
+    const feats = gj?.features || [];
+    if (feats.length === 0) {
+      setScanStatus('warn', '⚠ Nenhum lote incidente encontrado.');
+      log('warn', 'Lotes: nenhuma feição incidente no terreno.');
+      return;
+    }
+    const comEstilo = feats.map(f => {
+      const p = f.properties || {};
+      const sql = p.cd_digito_sql
+        || `${String(p.cd_setor_fiscal||'').padStart(3,'0')}.${String(p.cd_quadra_fiscal||'').padStart(3,'0')}.${String(p.cd_lote||'').padStart(4,'0')}`;
+      f.properties = { ...p, fill:'#FFD166', stroke:'#B8860B', 'stroke-width':1,
+                       'fill-opacity':0.25, _layer:'Lotes', kv_sql:sql, label:sql, name:sql };
+      return f;
+    });
+    await rpc.invoke('updateGeoJSONLayerContents', ['Cadastro · Lotes',
+      { type:'FeatureCollection', features: comEstilo }]);
+    setScanStatus('success', `✓ ${feats.length} lote(s) importado(s).`);
+    log('ok', `Lotes: ${feats.length} lote(s) incidente(s) importado(s).`);
+  } catch (e) {
+    setScanStatus('error', `Erro: ${e.message}`);
+    log('err', `Lotes: ${e.message}`);
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════
+// FOLHAS MDC — quadrículas que incidem no terreno
+// Download oficial: .../downloadIfr.aspx?orig=DownloadQuadriculas&arq=<cod>&arqTipo=DXF
+// ══════════════════════════════════════════════════════════════════
+window.identificarFolhasMDC = async function() {
+  const geom = _forcedGeometry || currentGeometry;
+  const el = document.getElementById('mdcResult');
+  if (!geom) { el.innerHTML = '<span style="color:var(--warn)">⚠ Selecione o terreno primeiro (botão 🖱).</span>'; return; }
+  const proxyOk = await ensureProxyReady();
+  if (!proxyOk) { el.innerHTML = '<span style="color:var(--error)">⚠ Proxy não respondeu.</span>'; return; }
+
+  el.innerHTML = 'Consultando quadrículas...';
+  try {
+    const gj = await fetchWFSByGeom('geoportal:quadricula_folha_mds', geojsonToWKT(geom), 20);
+    const feats = gj?.features || [];
+    const codigos = [...new Set(feats.map(f => f.properties?.cd_quadricula).filter(Boolean))].sort();
+
+    if (codigos.length === 0) {
+      el.innerHTML = '<span style="color:var(--warn)">Nenhuma folha MDC identificada para este terreno.</span>';
+      log('warn', 'MDC: nenhuma quadrícula incidente.');
+      return;
+    }
+
+    const base = 'https://geosampa.prefeitura.sp.gov.br/PaginasPublicas/downloadIfr.aspx?orig=DownloadQuadriculas&arq=';
+    const linhas = codigos.map(cd => `
+      <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--outline-variant)">
+        <span style="flex:1;color:var(--on-surface);font-weight:600">${cd}</span>
+        <a href="${base}${encodeURIComponent(cd)}&arqTipo=DXF" target="_blank" rel="noopener"
+           style="color:var(--kv-blue);text-decoration:none;font-size:10px">DXF ↓</a>
+        <a href="${base}${encodeURIComponent(cd)}&arqTipo=DWG" target="_blank" rel="noopener"
+           style="color:var(--kv-blue);text-decoration:none;font-size:10px">DWG ↓</a>
+      </div>`).join('');
+
+    el.innerHTML = `<div style="color:var(--on-surface);margin-bottom:6px">${codigos.length} folha(s) incidente(s):</div>${linhas}`;
+    log('ok', `MDC: ${codigos.length} folha(s) — ${codigos.join(', ')}`);
+  } catch (e) {
+    el.innerHTML = `<span style="color:var(--error)">Erro: ${e.message}</span>`;
+    log('err', `MDC: ${e.message}`);
+  }
+};
+
  window.runPresetBase = async function() {
    if (!currentBBOX) {
      log('err', '⚠ Execute a varredura (Ler Terreno) na aba ① primeiro!');
@@ -6041,7 +6231,7 @@ log('ok','SDK pronto.');
 window.updateModeHint();
 </script>
   <div style="position:fixed;bottom:0;left:0;right:0;padding:4px 12px;background:rgba(0,0,0,.85);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#c4c7c7;pointer-events:none;z-index:10;border-top:1px solid #1a1a1a;letter-spacing:.06em">
-    <span>Beta V140 · © 2026 Königsberger Vannucchi</span>
+    <span>Beta V141 · © 2026 Königsberger Vannucchi</span>
   </div>
 </body>
 </html>
